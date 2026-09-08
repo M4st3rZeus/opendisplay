@@ -170,3 +170,39 @@ final class AudioPacketTests: XCTestCase {
         XCTAssertEqual(decodedFrame.flatMap { AudioPacket.decode($0.payload) }, packet)
     }
 }
+
+/// The AAC-LC AudioSpecificConfig the receiver reconstructs instead of
+/// receiving. Two bytes of bit-packing, and a wrong one makes the decoder
+/// reject every frame while still reporting a healthy stream.
+final class AACCookieTests: XCTestCase {
+
+    func test48kHzStereoMatchesTheSpec() {
+        // objectType 2, freqIndex 3 (48000), channels 2:
+        // 00010 0011 0010 000 -> 0x11 0x90
+        XCTAssertEqual(AudioPacket.aacLCCookie(sampleRate: 48_000, channels: 2),
+                       Data([0x11, 0x90]))
+    }
+
+    func test44_1kHzStereoMatchesTheSpec() {
+        // freqIndex 4 (44100): 00010 0100 0010 000 -> 0x12 0x10
+        XCTAssertEqual(AudioPacket.aacLCCookie(sampleRate: 44_100, channels: 2),
+                       Data([0x12, 0x10]))
+    }
+
+    func testMonoDiffersFromStereo() {
+        XCTAssertNotEqual(AudioPacket.aacLCCookie(sampleRate: 48_000, channels: 1),
+                          AudioPacket.aacLCCookie(sampleRate: 48_000, channels: 2))
+    }
+
+    func testEveryRateTheEncoderCanProduceHasACookie() {
+        for rate in [8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000] {
+            XCTAssertNotNil(AudioPacket.aacLCCookie(sampleRate: rate, channels: 2),
+                            "no cookie for \(rate)Hz — decoder would reject every frame")
+        }
+    }
+
+    func testUnsupportedInputIsRejectedRatherThanGuessed() {
+        XCTAssertNil(AudioPacket.aacLCCookie(sampleRate: 12_345, channels: 2))
+        XCTAssertNil(AudioPacket.aacLCCookie(sampleRate: 48_000, channels: 0))
+    }
+}

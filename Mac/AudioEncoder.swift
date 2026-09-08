@@ -56,9 +56,74 @@ final class AudioEncoder {
         self.sourceFormat = format
         self.outputFormat = output
         self.configData = converter.outputFormat.magicCookie
+        self.pending = nil
         self.needsConfigFlag = true
         Log.info("audio: encoding \(Int(format.sampleRate))Hz \(format.channelCount)ch AAC-LC @ \(Self.bitRate / 1000)kbps")
         return true
+    }
+
+    /// AAC-LC's fixed frame size. The converter needs this many samples per
+    /// channel before it can emit a real packet.
+    private static let framesPerPacket: AVAudioFrameCount = 1024
+
+    /// Samples carried over from previous chunks, waiting to complete a frame.
+    private var pending: AVAudioPCMBuffer?
+
+    /// Stage `pcm` and return exactly one AAC frame's worth of samples once
+    /// enough have accumulated, or nil while still short.
+    ///
+    /// Any remainder past the frame boundary is kept for the next call, so no
+    /// audio is dropped at chunk edges — a gap there would be an audible click.
+    private func append(_ pcm: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let format = pcm.format
+        let carried = pending?.frameLength ?? 0
+        let total = carried + pcm.frameLength
+
+        guard let combined = AVAudioPCMBuffer(pcmFormat: format,
+                                              frameCapacity: total) else { return nil }
+        combined.frameLength = total
+        if let pending, carried > 0 { copy(pending, into: combined, at: 0, count: carried) }
+        copy(pcm, into: combined, at: carried, count: pcm.frameLength)
+
+        guard total >= Self.framesPerPacket else {
+            pending = combined          // still short — carry it all forward
+            return nil
+        }
+
+        guard let frame = AVAudioPCMBuffer(pcmFormat: format,
+                                           frameCapacity: Self.framesPerPacket) else { return nil }
+        frame.frameLength = Self.framesPerPacket
+        copy(combined, into: frame, at: 0, count: Self.framesPerPacket, sourceOffset: 0)
+
+        let leftover = total - Self.framesPerPacket
+        if leftover > 0, let rest = AVAudioPCMBuffer(pcmFormat: format,
+                                                     frameCapacity: leftover) {
+            rest.frameLength = leftover
+            copy(combined, into: rest, at: 0, count: leftover,
+                 sourceOffset: Self.framesPerPacket)
+            pending = rest
+        } else {
+            pending = nil
+        }
+        return frame
+    }
+
+    /// Copy `count` frames between buffers of the same format.
+    ///
+    /// Handles both interleaved and deinterleaved layouts: ScreenCaptureKit
+    /// hands over deinterleaved float, where each channel lives in its own
+    /// buffer, so copying only channel 0 would silently drop the right channel.
+    private func copy(_ source: AVAudioPCMBuffer, into destination: AVAudioPCMBuffer,
+                      at destinationOffset: AVAudioFrameCount, count: AVAudioFrameCount,
+                      sourceOffset: AVAudioFrameCount = 0) {
+        guard let src = source.floatChannelData, let dst = destination.floatChannelData else { return }
+        let channels = Int(source.format.channelCount)
+        let stride = source.stride            // 1 when deinterleaved
+        for channel in 0..<channels {
+            let from = src[channel].advanced(by: Int(sourceOffset) * stride)
+            let to = dst[channel].advanced(by: Int(destinationOffset) * stride)
+            to.update(from: from, count: Int(count) * stride)
+        }
     }
 
     /// One encoded packet, or nil when this buffer produced no output.
@@ -80,6 +145,15 @@ final class AudioEncoder {
             packetCapacity: 1,
             maximumPacketSize: converter.maximumOutputPacketSize)
 
+        // Accumulate until a full AAC frame's worth of samples is available.
+        //
+        // ScreenCaptureKit delivers audio in whatever chunk size it likes, and
+        // AAC-LC is framed in fixed 1024-sample blocks. Handing the converter a
+        // short chunk makes it emit a stub packet a few bytes long instead of
+        // nothing, and those went out as undecodable 6-byte payloads. Feeding
+        // it only whole frames is what makes the output real AAC.
+        guard let staged = append(pcm) else { return nil }
+
         var supplied = false
         var conversionError: NSError?
         let status = converter.convert(to: out, error: &conversionError) { _, outStatus in
@@ -92,7 +166,7 @@ final class AudioEncoder {
             }
             supplied = true
             outStatus.pointee = .haveData
-            return pcm
+            return staged
         }
 
         switch status {
@@ -107,7 +181,12 @@ final class AudioEncoder {
             return nil
         }
 
-        guard out.byteLength > 0 else { return nil }
+        // A real AAC-LC frame at 128 kbps is a few hundred bytes. Anything tiny
+        // is the converter emitting a stub because it did not have a full 1024
+        // samples to work with — sending those produced a stream of 6-byte
+        // payloads that failed to decode on every single packet. Drop them
+        // rather than putting undecodable audio on the wire.
+        guard out.byteLength >= 16 else { return nil }
         let data = Data(bytes: out.data, count: Int(out.byteLength))
 
         // Flag the config on the first packet after a (re)configuration so a
@@ -119,6 +198,7 @@ final class AudioEncoder {
 
     func reset() {
         converter?.reset()
+        pending = nil   // stale samples would click on reconnect
         needsConfigFlag = true
     }
 }
