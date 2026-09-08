@@ -71,10 +71,26 @@ struct ReceiverScreen: View {
             model.receiver.setSafeAreaInsets(long: 0, short: 0, portrait: portrait)
             return
         }
+        // Read the insets from the window, not from `geo`. This GeometryReader
+        // sits inside a hierarchy that applies ignoresSafeArea while streaming,
+        // so its own safeAreaInsets collapse to roughly zero and the panel came
+        // back barely trimmed — the notch still clipped a few pixels of the
+        // Mac's menu bar. The window's insets are the real ones.
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first
+        let insets = window?.safeAreaInsets ?? .zero
         let scale = UIScreen.main.nativeScale
-        let insets = geo.safeAreaInsets
+
+        // Match the panel to the size the video view actually occupies once
+        // SwiftUI has inset it, so the desktop's aspect ratio equals the view's
+        // and the layer's aspect-fit adds no letterbox of its own. Anything
+        // else double-counts: the view shrinks by the insets and the picture
+        // shrinks again inside it, which clipped the top edge and wasted room
+        // along the bottom.
         let vertical = Int(((insets.top + insets.bottom) * scale).rounded())
-        let horizontal = Int(((insets.leading + insets.trailing) * scale).rounded())
+        let horizontal = Int(((insets.left + insets.right) * scale).rounded())
+
         // "long"/"short" name the panel's own axes, not the screen's current
         // orientation — in portrait the vertical inset runs along the long
         // edge, in landscape it runs along the short one.
@@ -109,6 +125,13 @@ struct ReceiverScreen: View {
                         // is what actually keeps it clear of the notch. Without
                         // it the smaller picture would still be drawn
                         // edge-to-edge and stretched back under the cutout.
+                        //
+                        // SwiftUI insets the view; the panel size follows from
+                        // that. AVSampleBufferDisplayLayer aspect-fits, so
+                        // shrinking the *reported panel* alone cannot work —
+                        // a proportionally smaller desktop just scales back up
+                        // to fill the screen and lands under the notch again.
+                        // Insetting the view is what actually moves the picture.
                         .ignoresSafeArea(edges: fitSafeArea ? [] : .all)
                     // Connected but no frames coming: without this the screen
                     // is silently black while the Mac sorts itself out (e.g.
@@ -140,7 +163,14 @@ struct ReceiverScreen: View {
             }
             .animation(.easeInOut(duration: 0.3), value: model.receiver.awaitingVideo)
             .onAppear { reportPanel(geo) }
-            .onChange(of: geo.size) { _ in reportPanel(geo) }
+            .onChange(of: geo.size) { _ in
+                reportPanel(geo)
+                // The window's safe-area insets settle a beat after the size
+                // does, and rotation moves the notch from one edge to another —
+                // so re-read once the layout has caught up, or landscape keeps
+                // portrait's insets and clips the side the notch moved to.
+                DispatchQueue.main.async { reportPanel(geo) }
+            }
             // Turning the fit on or off re-announces the panel, and the Mac
             // rebuilds its virtual display for the new size — the same path a
             // rotation takes.
