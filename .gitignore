@@ -39,3 +39,6 @@ fastlane/test_output/
 node_modules/
 dist-ssr/
 docs/
+
+# Local signing override (personal team) — see project-local.yml
+project-local.yml
