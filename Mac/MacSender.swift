@@ -2059,8 +2059,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // Capture time on our own clock, matching the units the video path
         // stamps frames with, so the receiver can align the two with the
         // ping/pong offset it already maintains.
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let ptsMs = pts.isValid ? pts.seconds * 1000 : Date().timeIntervalSince1970 * 1000
+        // Wall clock, matching the video path's `cap` stamp (see the telemetry
+        // prefix in the capture callback). CMSampleBuffer presentation stamps
+        // are mach uptime — seconds since boot — so using them here put audio
+        // on a different epoch from video: the receiver's latency calculation
+        // landed far outside its sanity window, was discarded, and both
+        // aE2e50 and avSkew read a permanent 0.
+        let ptsMs = Date().timeIntervalSince1970 * 1000
 
         let packet = AudioPacket(codec: .aacLC,
                                  hasConfig: encoded.hasConfig,

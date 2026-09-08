@@ -42,6 +42,13 @@ final class AudioPlayer {
     private var running = false
     private var loggedFormat = false
     private var loggedStartFailure = false
+    /// Packets handed to the player node and not yet consumed by it. See
+    /// `maxScheduled` — this is the backpressure that paces playback.
+    private var scheduled = 0
+    private var decodeFailures = 0
+    private var loggedFirstPlayback = false
+    private var loggedDryStatus = false
+    private var loggedNoDescriptions = false
 
     /// User-facing mute. Packets keep flowing and the buffer keeps draining —
     /// muting only silences output, so unmuting resumes in sync instead of
@@ -56,6 +63,7 @@ final class AudioPlayer {
             guard let self, !self.running else { return }
             self.running = true
             self.buffer.reset()
+            self.scheduled = 0
             self.startDrainTimer()
         }
     }
@@ -80,9 +88,12 @@ final class AudioPlayer {
             self.player.stop()
             if self.engine.isRunning { self.engine.stop() }
             self.buffer.reset()
+            self.scheduled = 0
             self.converter = nil
             self.sourceFormat = nil
             self.loggedFormat = false
+            self.loggedFirstPlayback = false
+            self.decodeFailures = 0
         }
     }
 
@@ -92,6 +103,7 @@ final class AudioPlayer {
         queue.async { [weak self] in
             guard let self else { return }
             self.buffer.reset()
+            self.scheduled = 0
             self.player.stop()
             if self.engine.isRunning { self.player.play() }
         }
@@ -136,12 +148,11 @@ final class AudioPlayer {
 
     // MARK: - Playback
 
-    /// Move packets from the buffer into the engine.
+    /// Wake up often enough to keep the engine topped up.
     ///
-    /// A timer rather than a pull callback: `scheduleBuffer` is push-driven, so
-    /// something has to decide when to push. The interval is shorter than one
-    /// AAC packet's duration (~21ms at 48kHz) so the engine is topped up before
-    /// it drains rather than after.
+    /// The tick only decides *when to look*; `maxScheduled` decides how much is
+    /// actually handed over, so a fast tick costs nothing and simply means the
+    /// engine is refilled promptly once it has room.
     private func startDrainTimer() {
         drainTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -151,23 +162,50 @@ final class AudioPlayer {
         drainTimer = timer
     }
 
+    /// How many packets may sit scheduled inside the player node at once.
+    ///
+    /// This, not the timer, is what paces playback: a packet is pulled only
+    /// when the engine has room, so the buffer drains at exactly the rate the
+    /// hardware consumes audio. The earlier version pulled a fixed two packets
+    /// per 10 ms tick — 200/s against an arrival rate of ~47/s (1024 samples at
+    /// 48 kHz is ~21 ms of audio) — so it emptied the buffer roughly four times
+    /// faster than it filled and underran continuously.
+    private static let maxScheduled = 3
+
     private func drain() {
         guard running else { return }
-        // Bounded per tick: after a stall the buffer may hold many packets, and
-        // scheduling all of them at once would hand the engine a burst it plays
-        // as fast as it can. Two per 10ms tick outruns real-time (~21ms per
-        // packet) enough to recover without racing.
-        for _ in 0..<2 {
+        while scheduled < Self.maxScheduled {
             guard let packet = buffer.dequeue() else { return }
             play(packet)
         }
     }
 
     private func play(_ packet: AudioPacket) {
-        guard let pcm = decode(packet) else { return }
+        guard let pcm = decode(packet) else {
+            // Silence with a full buffer means every packet is failing to
+            // decode; without this the two are indistinguishable from outside.
+            decodeFailures += 1
+            if decodeFailures == 1 || decodeFailures % 200 == 0 {
+                Log.info("audio: decode failed (\(decodeFailures) so far) — no sound")
+            }
+            return
+        }
         guard ensureEngineRunning(for: pcm.format) else { return }
+        if !loggedFirstPlayback {
+            loggedFirstPlayback = true
+            Log.info("audio: playing \(Int(pcm.format.sampleRate))Hz "
+                     + "\(pcm.format.channelCount)ch, engine running=\(engine.isRunning) "
+                     + "volume=\(player.volume) muted=\(isMuted)")
+        }
         if isMuted { return }   // decoded and dequeued, just not heard
-        player.scheduleBuffer(pcm, completionHandler: nil)
+        // The completion handler is the pacing signal: it fires when the engine
+        // has consumed this buffer, which is what lets `drain` pull the next
+        // one at the hardware's rate instead of a timer's.
+        scheduled += 1
+        player.scheduleBuffer(pcm) { [weak self] in
+            guard let self else { return }
+            self.queue.async { self.scheduled = max(0, self.scheduled - 1) }
+        }
         if !player.isPlaying { player.play() }
     }
 
@@ -189,13 +227,25 @@ final class AudioPlayer {
         }
         // AAC-LC is 1024 samples per packet; the description tells the decoder
         // how much of `data` this packet occupies.
+        // A nil descriptor array means the decoder gets no packet boundary and
+        // rejects the frame — worth knowing, since it fails identically to a
+        // malformed payload.
+        if compressed.packetDescriptions == nil, !loggedNoDescriptions {
+            loggedNoDescriptions = true
+            Log.info("audio: compressed buffer has no packetDescriptions — decoder will reject frames")
+        }
         compressed.packetDescriptions?.pointee = AudioStreamPacketDescription(
             mStartOffset: 0,
             mVariableFramesInPacket: 0,
             mDataByteSize: UInt32(packet.payload.count))
 
         guard let pcm = AVAudioPCMBuffer(pcmFormat: outputFormat,
-                                         frameCapacity: 2048) else { return nil }
+        // Exactly one AAC-LC frame: 1024 samples, which is what one packet
+        // decodes to. Asking for more (this was 2048) makes the converter
+        // consume the packet, find it cannot fill the request, and return
+        // inputRanDry having produced no PCM at all — a silent failure on every
+        // single packet, with a perfectly valid frame going in.
+                                         frameCapacity: 1024) else { return nil }
 
         var supplied = false
         var error: NSError?
@@ -213,6 +263,14 @@ final class AudioPlayer {
         case .haveData:
             return pcm.frameLength > 0 ? pcm : nil
         case .inputRanDry, .endOfStream:
+            // Not an error in AVAudioConverter's eyes, so the `.error` branch
+            // never fires and nothing was logged — which is why a decode that
+            // fails on every packet looked silent from outside.
+            if !loggedDryStatus {
+                loggedDryStatus = true
+                Log.info("audio: converter returned \(status == .inputRanDry ? "inputRanDry" : "endOfStream")"
+                         + " for a \(packet.payload.count)B packet — no PCM produced")
+            }
             return nil
         case .error:
             if let error { Log.info("audio decode error: \(error)") }
@@ -236,6 +294,14 @@ final class AudioPlayer {
             mReserved: 0)
         guard let inFormat = AVAudioFormat(streamDescription: &description) else { return nil }
 
+        // AAC needs its AudioSpecificConfig before it can decode anything, and
+        // an ASBD alone does not carry one — without it the decoder builds
+        // happily and then rejects every frame, which is exactly what it did.
+        //
+        // For AAC-LC the config is two bytes fully determined by the sample
+        // rate and channel count, so it is reconstructed below rather than
+        // sent, and applied to the converter once it exists.
+
         if let converter, let sourceFormat, sourceFormat == inFormat { return converter }
 
         // Float32 deinterleaved is what AVAudioEngine wants; letting it convert
@@ -245,6 +311,11 @@ final class AudioPlayer {
               let made = AVAudioConverter(from: inFormat, to: outFormat) else {
             Log.info("audio: no decoder for \(packet.sampleRate)Hz \(packet.channels)ch")
             return nil
+        }
+
+        if let cookie = AudioPacket.aacLCCookie(sampleRate: packet.sampleRate,
+                                                channels: packet.channels) {
+            made.magicCookie = cookie
         }
 
         converter = made

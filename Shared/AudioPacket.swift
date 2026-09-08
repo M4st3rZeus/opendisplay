@@ -95,4 +95,24 @@ struct AudioPacket: Equatable {
                            ptsMs: Double(bitPattern: bits),
                            payload: data.suffix(from: base + headerSize))
     }
+
+    /// The 2-byte AAC-LC AudioSpecificConfig for a sample rate and channel
+    /// count (ISO/IEC 14496-3).
+    ///
+    /// Reconstructed rather than carried on the wire: for AAC-LC it is fully
+    /// determined by these two values, both of which every packet already
+    /// carries, so sending it would be redundant bytes at ~47 packets a second.
+    ///
+    ///   5 bits  audioObjectType        2 = AAC-LC
+    ///   4 bits  samplingFrequencyIndex
+    ///   4 bits  channelConfiguration
+    ///   3 bits  zero
+    static func aacLCCookie(sampleRate: Int, channels: Int) -> Data? {
+        let rates = [96000, 88200, 64000, 48000, 44100, 32000,
+                     24000, 22050, 16000, 12000, 11025, 8000, 7350]
+        guard let index = rates.firstIndex(of: sampleRate),
+              (1...7).contains(channels) else { return nil }
+        let bits = (2 << 11) | (index << 7) | (channels << 3)
+        return Data([UInt8((bits >> 8) & 0xFF), UInt8(bits & 0xFF)])
+    }
 }
