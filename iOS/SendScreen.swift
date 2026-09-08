@@ -48,7 +48,7 @@ final class ReceiverBrowser: ObservableObject {
 }
 
 struct SendScreen: View {
-    @ObservedObject var receiver: PhoneReceiver
+    @ObservedObject var receiver: StreamReceiver
     @Environment(\.dismiss) private var dismiss
     @StateObject private var browser = ReceiverBrowser()
     @State private var target = BroadcastTarget.serviceName

@@ -41,6 +41,12 @@ final class BroadcastSender {
     private var encoderHeight = 0
 
     private var connectionReady = false
+    /// Whether this connection's receiver speaks tagged framing (protocol 4+).
+    ///
+    /// Per-connection, and false until the receiver's `hello` proves otherwise:
+    /// `welcome` announces our version, so it necessarily goes out before we
+    /// know theirs and must be untagged. Mirrors MacSender.
+    private var peerSpeaksTaggedFrames = false
     private var stopped = false
     private var paused = false
     private var needsKeyframe = true
@@ -166,6 +172,9 @@ final class BroadcastSender {
             case .ready:
                 Log.info("connection ready to \(self.targetService)")
                 self.connectionReady = true
+                // Back to legacy framing until this receiver identifies
+                // itself: a reconnect may reach a different device.
+                self.peerSpeaksTaggedFrames = false
                 self.everConnected = true
                 self.disconnectedSince = nil
                 self.needsKeyframe = true   // new peer needs SPS/PPS + IDR
@@ -297,6 +306,14 @@ final class BroadcastSender {
             // version handshake reply still applies (issue #132).
             Log.info("receiver hello: \(String(data: payload, encoding: .utf8) ?? "?")")
             sendJSONFrame("{\"type\":\"\(WireMessage.welcome)\",\"pv\":\(WireProtocol.version),\"min\":\(WireProtocol.minSupportedPeer)}")
+            // Only now, with `welcome` already sent untagged, may we tag: the
+            // receiver cannot know our version until it reads that message.
+            let peerPV = obj["pv"] as? Int ?? WireProtocol.assumedWhenAbsent
+            let tagged = peerPV >= WireProtocol.taggedFrameVersion
+            if tagged != peerSpeaksTaggedFrames {
+                peerSpeaksTaggedFrames = tagged
+                Log.info("framing: \(tagged ? "tagged" : "legacy") (receiver pv \(peerPV))")
+            }
         case "kf":
             Log.info("receiver requested keyframe")
             needsKeyframe = true
@@ -440,18 +457,15 @@ final class BroadcastSender {
 
     private func sendJSONFrame(_ json: String) {
         guard let connection, connectionReady else { return }
-        let payload = Data(json.utf8)
-        var header = UInt32(payload.count).bigEndian
-        var frame = Data(bytes: &header, count: 4)
-        frame.append(payload)
+        let frame = FrameCodec.encode(Data(json.utf8), type: .json,
+                                      tagged: peerSpeaksTaggedFrames)
         connection.send(content: frame, completion: .contentProcessed { _ in })
     }
 
     private func sendFramed(_ payload: Data) {
         guard let connection, connectionReady else { return }
-        var header = UInt32(payload.count).bigEndian
-        var frame = Data(bytes: &header, count: 4)
-        frame.append(payload)
+        let frame = FrameCodec.encode(payload, type: .video,
+                                      tagged: peerSpeaksTaggedFrames)
         pendingSends += 1
         connection.send(content: frame, completion: .contentProcessed { [weak self] error in
             guard let self else { return }

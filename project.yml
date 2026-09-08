@@ -217,6 +217,9 @@ targets:
     sources:
       - Broadcast
       - Shared/Protocol.swift
+      - Shared/FrameCodec.swift
+      # iOS/Log.swift references LogSnapshot for the diagnostics report.
+      - Shared/LogSnapshot.swift
       - iOS/Log.swift
     info:
       path: Broadcast/Info.plist
