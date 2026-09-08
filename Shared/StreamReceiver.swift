@@ -69,6 +69,13 @@ final class StreamReceiver: ObservableObject {
     @Published var connected = false
     @Published var videoSize = CGSize.zero   // for touch coordinate mapping
     @Published var perf = PerfStats()
+    /// True while a Mac is connected but no frame has decoded for a couple of
+    /// seconds (or ever). Once a session has streamed, the receiver view is a
+    /// bare black canvas between frames — so a Mac that is connected but not
+    /// sending (e.g. while it works around a poisoned display identity, #230)
+    /// otherwise reads as a dead black screen with no explanation.
+    @Published var awaitingVideo = false
+    private var awaitingVideoNow = false   // queue-side mirror of the above
     // Compatibility signal from the connected Mac (issue #132). Nil = no signal.
     // Merged into the update gate by ReceiverScreen.
     @Published var peerSignal: PeerUpdateSignal?
@@ -717,7 +724,16 @@ final class StreamReceiver: ObservableObject {
         let watchdog = DispatchSource.makeTimerSource(queue: queue)
         watchdog.schedule(deadline: .now() + 2.0, repeating: 2.0)
         watchdog.setEventHandler { [weak self] in
-            guard let self, let conn = self.connection, conn.state == .ready,
+            guard let self else { return }
+            // Frame drought while the link is up — surfaced by the UI so the
+            // screen isn't silently black (#233). Checked before the liveness
+            // guard below, which returns early on a healthy connection: a Mac
+            // that is connected and sending control traffic but no video is
+            // exactly the case this catches. Cleared eagerly in enqueueFrame;
+            // this tick only needs to catch the onset.
+            self.setAwaitingVideo(self.connection?.state == .ready
+                && (self.lastFrameAt.map { Date().timeIntervalSince($0) > 2 } ?? true))
+            guard let conn = self.connection, conn.state == .ready,
                   Date().timeIntervalSince(self.lastDataReceived) > 5 else { return }
             Log.info("watchdog: nothing from the Mac for >5s — dropping connection")
             conn.cancel()
@@ -816,6 +832,12 @@ final class StreamReceiver: ObservableObject {
             self.cursorState = (x, y, visible)
             self.onCursor?(x, y, visible)
         }
+    }
+
+    private func setAwaitingVideo(_ value: Bool) {
+        guard awaitingVideoNow != value else { return }
+        awaitingVideoNow = value
+        DispatchQueue.main.async { self.awaitingVideo = value }
     }
 
     private func resetStreamState() {
@@ -1258,6 +1280,7 @@ final class StreamReceiver: ObservableObject {
             if ms > 50 { stallsThisWindow += 1 }
         }
         lastFrameAt = now
+        setAwaitingVideo(false)
 
         // True end-to-end latency: Mac capture timestamp vs our clock mapped
         // onto the Mac's via the ping/pong offset.
