@@ -18,6 +18,11 @@ final class VirtualDisplay {
     private let onOriginChange: ((CGPoint, CGSize) -> Void)?
 
     var displayID: CGDirectDisplayID { display.displayID }
+    var isUsable: Bool {
+        !CGDisplayBounds(displayID).isEmpty
+            && CGDisplayIsOnline(displayID) != 0
+            && CGDisplayIsActive(displayID) != 0
+    }
 
     /// Must be called on the main thread. `serialNum` must be unique per
     /// concurrent display AND stable per device — macOS keys saved display
