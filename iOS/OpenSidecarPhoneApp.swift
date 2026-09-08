@@ -48,10 +48,48 @@ struct ReceiverScreen: View {
     // Off by default: edge-to-edge stays the behaviour every existing install
     // already has, and an update must not silently resize anyone's desktop.
     @AppStorage("fitSafeArea") private var fitSafeArea = false
+    // -1 = untouched, use the measured default. 0 is a real choice
+    // (no margin at all), so it cannot double as the unset marker.
+    @AppStorage("housingInset") private var housingInsetPoints = -1.0
     // First-run onboarding (issue #49): explain the Mac app is required.
     // Shown until either the user dismisses it or the device connects once.
     @AppStorage("hasConnectedBefore") private var hasConnectedBefore = false
     @AppStorage("onboardingDismissed") private var onboardingDismissed = false
+
+    /// Points reserved along the top edge for the camera housing while the
+    /// status bar is hidden.
+    ///
+    /// In landscape iOS reports `top = 0` — the status bar is hidden, so by its
+    /// reckoning the strip is free — but the housing still physically covers
+    /// it. Only the shallow part of the housing intrudes on the long edge, so
+    /// this is much smaller than the ~60pt the same housing takes off the side
+    /// inset in portrait.
+    ///
+    /// A device without a housing reports a real top inset anyway, and `max`
+    /// leaves that untouched.
+    ///
+    /// The default is measured against the Mac's menu bar (21pt
+    /// over-reserved by ~5, 16pt by ~2, so ~14 sits flush). Housing depth
+    /// differs across models and iOS exposes no API for it, so the value is
+    /// adjustable in Settings rather than fixed — a wrong constant either
+    /// clips the menu bar or wastes a strip, and only the person looking at
+    /// the screen can tell which.
+    private static let defaultCameraHousingInset: CGFloat = 14
+
+    private var cameraHousingInsetValue: CGFloat {
+        housingInsetPoints >= 0 ? CGFloat(housingInsetPoints) : Self.defaultCameraHousingInset
+    }
+
+    /// Extra top padding for the camera housing, and the same value the panel
+    /// calculation subtracts — read from the window so both agree. A mismatch
+    /// here stretches the picture by exactly the difference.
+    private var housingPadding: CGFloat {
+        guard fitSafeArea else { return 0 }
+        let windowTop = UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first?.safeAreaInsets.top ?? 0
+        return windowTop < cameraHousingInsetValue ? cameraHousingInsetValue - windowTop : 0
+    }
 
     // Streaming = connected and the video format is known.
     private var isStreaming: Bool {
@@ -88,8 +126,24 @@ struct ReceiverScreen: View {
         // else double-counts: the view shrinks by the insets and the picture
         // shrinks again inside it, which clipped the top edge and wasted room
         // along the bottom.
-        let vertical = Int(((insets.top + insets.bottom) * scale).rounded())
+        // The window reports top = 0 while streaming, because .statusBarHidden
+        // removes the status bar and iOS then considers the strip free. The
+        // camera housing is still physically there, so the desktop's top row —
+        // the Mac's menu bar — renders underneath it. Nothing in the safe area
+        // expresses "hidden but still occupied", so the housing gets its own
+        // allowance whenever the reported top inset has collapsed.
+        // Not gated on isStreaming: this runs on rotation before the first
+        // frame arrives, and gating it made the panel disagree with the padding
+        // the view had already applied — which showed up as the picture being
+        // letterboxed horizontally instead of filling the width.
+        let topInset = max(insets.top, cameraHousingInsetValue)
+        let vertical = Int(((topInset + insets.bottom) * scale).rounded())
         let horizontal = Int(((insets.left + insets.right) * scale).rounded())
+        // Per-edge, because the sums hide which side the trim came from — and
+        // in landscape it is the asymmetry that matters: a 20pt vertical inset
+        // that is entirely home-indicator leaves the top edge with none.
+        Log.info("safe-area edges: top=\(insets.top) bottom=\(insets.bottom) "
+                 + "left=\(insets.left) right=\(insets.right) portrait=\(portrait)")
 
         // "long"/"short" name the panel's own axes, not the screen's current
         // orientation — in portrait the vertical inset runs along the long
@@ -133,6 +187,13 @@ struct ReceiverScreen: View {
                         // to fill the screen and lands under the notch again.
                         // Insetting the view is what actually moves the picture.
                         .ignoresSafeArea(edges: fitSafeArea ? [] : .all)
+                        // The safe area cannot express the camera housing while
+                        // the status bar is hidden (iOS reports top = 0), so the
+                        // top strip is padded explicitly. Without this the
+                        // desktop's menu bar renders under the housing — the
+                        // reported panel already excludes these points, so
+                        // omitting the padding also stretches the picture.
+                        .padding(.top, housingPadding)
                     // Connected but no frames coming: without this the screen
                     // is silently black while the Mac sorts itself out (e.g.
                     // the poisoned-identity recovery, #230).
@@ -175,6 +236,7 @@ struct ReceiverScreen: View {
             // rebuilds its virtual display for the new size — the same path a
             // rotation takes.
             .onChange(of: fitSafeArea) { _ in reportPanel(geo) }
+            .onChange(of: housingInsetPoints) { _ in reportPanel(geo) }
             .sheet(isPresented: $showOnboarding) {
                 OnboardingView { onboardingDismissed = true }
             }
@@ -414,6 +476,7 @@ struct SettingsView: View {
     @AppStorage("showAnalytics") private var showAnalytics = false
     @AppStorage("metalRenderer") private var metalRenderer = false
     @AppStorage("fitSafeArea") private var fitSafeArea = false
+    @AppStorage("housingInset") private var housingInsetPoints = -1.0
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -447,10 +510,22 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Fit inside the safe area", isOn: $fitSafeArea)
+                    if fitSafeArea {
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text("Top margin")
+                                Spacer()
+                                Text("\(Int(housingInsetPoints >= 0 ? housingInsetPoints : 14)) pt")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                            Slider(value: $housingInsetPoints, in: 0...30, step: 1)
+                        }
+                    }
                 } header: {
                     Text("Display area")
                 } footer: {
-                    Text("Keeps the Mac's desktop clear of the notch and the rounded corners by streaming a slightly smaller display. Off by default — the picture fills the whole screen and the menu bar can sit under the notch. Changing this resizes the display on the Mac.")
+                    Text("Keeps the Mac's desktop clear of the notch and the rounded corners by streaming a slightly smaller display. Off by default — the picture fills the whole screen and the menu bar can sit under the notch. Changing this resizes the display on the Mac.\n\nIn landscape iOS reports no top inset once the status bar hides, so the space for the camera housing is reserved manually. Lower the margin until the Mac's menu bar sits just clear of the housing; 0 reserves nothing.")
                 }
 
                 Section {
