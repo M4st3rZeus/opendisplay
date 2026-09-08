@@ -257,6 +257,15 @@ final class StreamReceiver: ObservableObject {
     private var nativeShort = 0
     private(set) var devicePixelsWide = 0
     private(set) var devicePixelsHigh = 0
+    /// Pixels trimmed off each axis so the streamed desktop clears the notch
+    /// and the rounded corners. Zero — the default — reports the full panel and
+    /// keeps the historical edge-to-edge behaviour exactly.
+    ///
+    /// Held per orientation because the insets are not symmetric: the notch
+    /// takes a long-edge inset in landscape and a short-edge one in portrait,
+    /// so one stored pair would fit one orientation and crop the other.
+    private var insetLong = 0
+    private var insetShort = 0
     var deviceScale: Double = 2
     // Name advertised over Bonjour for the Mac's WiFi picker. iOS 16+ returns
     // a generic "iPhone" from UIDevice.current.name (the user-assigned name
@@ -328,10 +337,35 @@ final class StreamReceiver: ObservableObject {
         }
     }
 
+    /// Trim the reported panel so the Mac's desktop lands inside the safe area
+    /// (notch, rounded corners) instead of behind it.
+    ///
+    /// Takes pixels already reduced by the caller, because only the view knows
+    /// the safe-area insets, and they are reported in points. Announcing a
+    /// smaller panel is all this takes: the Mac sizes its virtual display from
+    /// `hello`, so a smaller panel means a smaller desktop, and the letterbox
+    /// the video view already applies puts it inside the insets.
+    ///
+    /// Deliberately reuses the rotation path rather than adding a rebuild
+    /// mechanism of its own — rotation already proves a live panel change
+    /// re-announces cleanly and the Mac rebuilds for it.
+    func setSafeAreaInsets(long: Int, short: Int, portrait: Bool) {
+        let l = max(0, long), s = max(0, short)
+        guard l != insetLong || s != insetShort else { return }
+        insetLong = l
+        insetShort = s
+        Log.info("safe-area inset -> long \(l)px short \(s)px")
+        setOrientation(portrait: portrait)
+    }
+
     func setOrientation(portrait: Bool) {
         guard nativeLong > 0 else { return }
-        setPanel(pixelsWide: portrait ? nativeShort : nativeLong,
-                 pixelsHigh: portrait ? nativeLong : nativeShort,
+        // Never let an inset collapse the panel: a bogus value would otherwise
+        // ask the Mac for a zero- or negative-sized display.
+        let long = max(320, nativeLong - insetLong)
+        let short = max(320, nativeShort - insetShort)
+        setPanel(pixelsWide: portrait ? short : long,
+                 pixelsHigh: portrait ? long : short,
                  scale: deviceScale)
     }
 

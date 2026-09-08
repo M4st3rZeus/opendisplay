@@ -45,6 +45,9 @@ struct ReceiverScreen: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("showAnalytics") private var showAnalytics = false
     @AppStorage("metalRenderer") private var metalRenderer = false
+    // Off by default: edge-to-edge stays the behaviour every existing install
+    // already has, and an update must not silently resize anyone's desktop.
+    @AppStorage("fitSafeArea") private var fitSafeArea = false
     // First-run onboarding (issue #49): explain the Mac app is required.
     // Shown until either the user dismisses it or the device connects once.
     @AppStorage("hasConnectedBefore") private var hasConnectedBefore = false
@@ -53,6 +56,31 @@ struct ReceiverScreen: View {
     // Streaming = connected and the video format is known.
     private var isStreaming: Bool {
         model.receiver.connected && model.receiver.videoSize != .zero
+    }
+
+    /// Announce the panel this device renders onto, minus the safe area when
+    /// the user asked for it.
+    ///
+    /// The insets arrive in points and the panel is announced in pixels, so
+    /// they are scaled before subtracting. Both edges of an axis are summed:
+    /// the notch takes one side, but a desktop centred on the panel has to
+    /// clear both, and the video view letterboxes symmetrically.
+    private func reportPanel(_ geo: GeometryProxy) {
+        let portrait = geo.size.height > geo.size.width
+        guard fitSafeArea else {
+            model.receiver.setSafeAreaInsets(long: 0, short: 0, portrait: portrait)
+            return
+        }
+        let scale = UIScreen.main.nativeScale
+        let insets = geo.safeAreaInsets
+        let vertical = Int(((insets.top + insets.bottom) * scale).rounded())
+        let horizontal = Int(((insets.leading + insets.trailing) * scale).rounded())
+        // "long"/"short" name the panel's own axes, not the screen's current
+        // orientation — in portrait the vertical inset runs along the long
+        // edge, in landscape it runs along the short one.
+        model.receiver.setSafeAreaInsets(long: portrait ? vertical : horizontal,
+                                         short: portrait ? horizontal : vertical,
+                                         portrait: portrait)
     }
 
     // Below the force floor → present the blocking gate (issue #135). The
@@ -77,7 +105,11 @@ struct ReceiverScreen: View {
                                    receiver: model.receiver,
                                    useMetal: metalRenderer)
                         .id(metalRenderer)   // rebuild the layer tree on toggle
-                        .ignoresSafeArea()
+                        // Reporting a smaller panel shrinks the desktop; this
+                        // is what actually keeps it clear of the notch. Without
+                        // it the smaller picture would still be drawn
+                        // edge-to-edge and stretched back under the cutout.
+                        .ignoresSafeArea(edges: fitSafeArea ? [] : .all)
                     // Connected but no frames coming: without this the screen
                     // is silently black while the Mac sorts itself out (e.g.
                     // the poisoned-identity recovery, #230).
@@ -107,15 +139,17 @@ struct ReceiverScreen: View {
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: model.receiver.awaitingVideo)
-            .onAppear { model.receiver.setOrientation(portrait: geo.size.height > geo.size.width) }
-            .onChange(of: geo.size) { size in
-                model.receiver.setOrientation(portrait: size.height > size.width)
-            }
+            .onAppear { reportPanel(geo) }
+            .onChange(of: geo.size) { _ in reportPanel(geo) }
+            // Turning the fit on or off re-announces the panel, and the Mac
+            // rebuilds its virtual display for the new size — the same path a
+            // rotation takes.
+            .onChange(of: fitSafeArea) { _ in reportPanel(geo) }
             .sheet(isPresented: $showOnboarding) {
                 OnboardingView { onboardingDismissed = true }
             }
         }
-        .ignoresSafeArea(edges: isStreaming ? .all : [])
+        .ignoresSafeArea(edges: isStreaming && !fitSafeArea ? .all : [])
         .statusBarHidden(isStreaming)
         .persistentSystemOverlays(isStreaming ? .hidden : .automatic)
         .sheet(isPresented: $showSettings) {
@@ -349,6 +383,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("showAnalytics") private var showAnalytics = false
     @AppStorage("metalRenderer") private var metalRenderer = false
+    @AppStorage("fitSafeArea") private var fitSafeArea = false
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -378,6 +413,14 @@ struct SettingsView: View {
                     Text("Name")
                 } footer: {
                     Text("Shown in the Mac app's WiFi connection menu. iOS hides this \(deviceKind)'s real name from apps, so set it here once.")
+                }
+
+                Section {
+                    Toggle("Fit inside the safe area", isOn: $fitSafeArea)
+                } header: {
+                    Text("Display area")
+                } footer: {
+                    Text("Keeps the Mac's desktop clear of the notch and the rounded corners by streaming a slightly smaller display. Off by default — the picture fills the whole screen and the menu bar can sit under the notch. Changing this resizes the display on the Mac.")
                 }
 
                 Section {
