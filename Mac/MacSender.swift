@@ -132,6 +132,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // not a delta — repeated bumps in one session must not accumulate into
     // an offset nothing ever validated.
     @MainActor var onDisplayIdentityBumped: ((UInt32) -> Void)?
+    @MainActor var onTransportConfirmed: ((SenderTransport) -> Void)?
 
     private var stream: SCStream?
     private var encoder: VTCompressionSession?
@@ -524,7 +525,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                                           })
                 }
                 if created != nil { break }
-                Log.info("virtual display creation failed (identity +\(totalOffset), attempt \(attempt + 1)) — retrying")
+                if attempt < (probe == 0 ? 7 : 2) {
+                    Log.info("virtual display creation failed (identity +\(totalOffset), attempt \(attempt + 1)) — retrying")
+                } else {
+                    Log.info("virtual display creation failed (identity +\(totalOffset), attempt \(attempt + 1)) — max attempts reached")
+                }
                 await status("Preparing virtual display…")
             }
             guard let candidate = created else { continue }
@@ -1082,7 +1087,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         } else {
             stopUpgradeProbing()   // already off WiFi — nothing better to find
         }
-        Task { await self.status("Connected to \(self.endpointName)") }
+        // #246: report the transport only once the link is confirmed ready,
+        // so the session's onUSB flag never flips ahead of a working link.
+        let activeTransport = self.transport
+        Task { @MainActor in
+            self.onTransportConfirmed?(activeTransport)
+            await self.status("Connected to \(self.endpointName)")
+        }
     }
 
     // MARK: - Cable upgrade (PROTOCOL.md 6.4)
