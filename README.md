@@ -313,6 +313,63 @@ the logs only leave a device when you share them.
 The phone log is the half usually missing from a WiFi report: whether the
 receiver ever announced itself, whether its listener restarted, whether the
 decoder was failing. Attach both if you can.
+### Networks where WiFi mode cannot work
+
+Some WiFi networks run **client isolation** (also sold as AP isolation, guest
+mode, or "device isolation"). Each client can reach the internet, and nothing
+else. Traffic addressed sideways to another client on the same subnet is
+dropped by the access point. Guest and hotel WiFi, conference networks, and
+plenty of corporate offices are set up this way.
+
+No permission grant, app update, or setting on either device fixes this. The
+packets never leave the access point.
+
+Symptoms, in rough order of how often they get reported:
+
+- The device never appears in the Mac app's Devices list, even with the iPhone
+  app open and Local Network allowed on both sides.
+- The device *does* appear but every connect attempt hangs or drops. Many APs
+  still flood mDNS while blocking unicast, so discovery succeeds and dialling
+  fails.
+- Handoff, Universal Clipboard, and AirDrop between your own devices are flaky
+  or dead on the same network. This is the useful tell: it is not OpenDisplay.
+
+The Mac app probes for this and says so in the Devices list. The verdict is
+also written to `~/Library/Logs/OpenDisplay/opendisplay.log` at launch:
+
+```
+network: blocked — gateway silent, internet up
+```
+
+To confirm it yourself, ping your router and something on the internet:
+
+```sh
+ipconfig getoption en0 router      # your router's address
+ping -c 3 <router-address>         # silent on an isolating network
+ping -c 3 1.1.1.1                  # answers fine
+```
+
+Internet up while your own router is mute means peer-to-peer traffic is being
+dropped. Workarounds, best first:
+
+1. **USB.** Lower latency anyway, and unaffected.
+2. **A personal hotspot** from the phone, with the Mac joined to it.
+3. **A network you control.** Home routers do not isolate clients by default.
+
+Pasting the device's IP address in by hand does not rescue full client
+isolation: addressing a peer directly is exactly what the access point drops.
+It does help on the milder networks that block only multicast, where mDNS
+discovery fails but unicast still flows. The Mac app's verdict tells the two
+apart, because a router that answers means unicast is fine:
+
+```sh
+# only worth trying when the app reports the network as OK but nothing appears
+defaults write com.peetzweg.opensidecar.mac host <device-ip>
+defaults write com.peetzweg.opensidecar.mac port 9000
+```
+
+That dials a plain TCP endpoint instead of usbmuxd, so the device shows up as a
+USB row you can connect. Delete both keys (`defaults delete`) to go back.
 
 ## Roadmap
 

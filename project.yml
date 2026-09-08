@@ -155,6 +155,7 @@ targets:
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/LogSnapshot.swift
+      - Mac/NetworkDiagnostics.swift
     settings:
       base:
         # A hostless test bundle: the sources under test are compiled straight
