@@ -76,6 +76,7 @@ final class ReceiverController: ObservableObject {
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] streaming in
+                Log.info("streaming -> \(streaming) (window \(self?.window == nil ? "nil" : "open"))")
                 self?.streaming = streaming
                 self?.updateSleepAssertion(streaming)
                 if streaming { self?.showWindow() } else { self?.closeWindow() }

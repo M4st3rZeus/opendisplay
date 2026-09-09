@@ -915,6 +915,15 @@ final class StreamReceiver: ObservableObject {
                 ?? "Update OpenDisplay from the App Store to keep using your second display."
             let store = (obj["store"] as? String).flatMap { URL(string: $0) } ?? AppStore.updateURL
             DispatchQueue.main.async { self.peerSignal = .updateReceiver(message: message, storeURL: store) }
+        case WireMessage.closing:
+            // The sender is going away deliberately (iOS broadcast stopped).
+            // Clear videoSize as well as `connected`: streaming state is
+            // `connected && videoSize != .zero`, and videoSize survives a
+            // disconnect on purpose (#233, so a watchdog reconnect does not
+            // flash the idle UI). Only an explicit close clears it.
+            Log.info("sender announced closing — ending session")
+            DispatchQueue.main.async { self.videoSize = .zero }
+            setConnected(false)
         default:
             break
         }
