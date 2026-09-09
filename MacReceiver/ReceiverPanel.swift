@@ -31,6 +31,7 @@ struct ReceiverSections: View {
 
         if let receiver = controller.receiver {
             ReceiverAudioSection(receiver: receiver)
+            ReceiverSessionSection(receiver: receiver)
         }
 
         Section("How to connect") {
@@ -59,6 +60,44 @@ struct ReceiverAudioSection: View {
         } footer: {
             Text("Silences audio sent from the other Mac. The stream keeps running, so unmuting resumes in sync. Audio arrives only if the sending Mac has it switched on.")
         }
+    }
+}
+
+/// Control the connected sender's session from this end.
+///
+/// Only useful against an iOS broadcast: a phone mirroring its screen has no
+/// control surface a Mac watching the stream can reach — the user would have
+/// to pick up the phone and tap the status bar. A Mac sender ignores these
+/// messages, which is the additive behaviour every unknown control type
+/// already gets.
+struct ReceiverSessionSection: View {
+    @ObservedObject var receiver: StreamReceiver
+    @State private var paused = false
+
+    var body: some View {
+        if receiver.connected {
+            Section {
+                Button(paused ? "Resume mirroring" : "Pause mirroring") {
+                    paused.toggle()
+                    receiver.sendBroadcastPaused(paused)
+                }
+                Button("Stop mirroring", role: .destructive) {
+                    receiver.sendStopBroadcast()
+                }
+            } header: {
+                Text("Session")
+            } footer: {
+                Text("Pause holds the picture without ending the session, so resuming is immediate. Stop ends it on the sending device — useful when that device is a phone mirroring its screen and is not in reach. A Mac sender ignores both.")
+            }
+        }
+        // Outside the `if`: the modifier has to survive the disconnect that
+        // removes the section, or the flag stays set and the next session
+        // opens showing "Resume" for a stream that is already running.
+        Color.clear
+            .frame(height: 0)
+            .onChange(of: receiver.connected) { isConnected in
+                if !isConnected { paused = false }
+            }
     }
 }
 

@@ -449,6 +449,21 @@ final class BroadcastSender {
         case "kf":
             Log.info("receiver requested keyframe")
             needsKeyframe = true
+        case WireMessage.stopBroadcast:
+            // The receiving Mac asked us to stop. This is the only way to end
+            // a broadcast from that end: the phone's own control is the system
+            // status bar, which a Mac watching the stream cannot reach.
+            // onFatal ends the broadcast through finishBroadcastWithError, so
+            // the user gets a reason rather than a silently vanished
+            // recording indicator.
+            Log.info("receiver asked to stop the broadcast")
+            onFatal?("Mirroring was stopped from \u{201C}\(targetService)\u{201D}.")
+        case WireMessage.pauseBroadcast:
+            Log.info("receiver asked to pause")
+            setPaused(true)
+        case WireMessage.resumeBroadcast:
+            Log.info("receiver asked to resume")
+            setPaused(false)
         case "touch", "scroll":
             break   // view-only mirror: iOS offers no event injection
         case "stats":

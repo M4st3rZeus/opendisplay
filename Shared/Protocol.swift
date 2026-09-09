@@ -59,6 +59,14 @@ enum WireMessage {
     static let updateRequired = "updateRequired"    // Mac -> phone: peer is below the Mac's floor
     static let sleeping = "sleeping"                // phone -> Mac: device locked, reconnect on wake
     static let closing = "closing"                  // phone -> Mac: app quit, end the session for good
+
+    // Receiver -> sender session control. The wire already carried control
+    // messages in this direction (`kf`, `ping`, touch), so these are additive
+    // at pv 4: a sender that does not know them logs and ignores them, which
+    // is what every unknown type already does.
+    static let stopBroadcast = "stopBroadcast"      // receiver -> sender: end the session now
+    static let pauseBroadcast = "pauseBroadcast"    // receiver -> sender: stop sending frames
+    static let resumeBroadcast = "resumeBroadcast"  // receiver -> sender: start sending again
 }
 
 /// Ordering for `hello.addrs` (PROTOCOL.md 6.4).
