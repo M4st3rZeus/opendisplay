@@ -525,11 +525,26 @@ final class StreamReceiver: ObservableObject {
         }
     }
 
+    /// Bumped by every restart so a scheduled one that has been superseded
+    /// does nothing when it fires.
+    private var listenerGeneration = 0
+
     private func restartListener() {
+        listenerGeneration += 1
         listener?.cancel()
         listener = nil
         listenerHealthy = false
-        startListener()
+        // A cancelled NWListener releases port 9000 asynchronously. Rebinding
+        // in the same turn raced that release and failed with EADDRINUSE,
+        // which scheduled another restart — the listener ended up in a
+        // failure loop where it existed but never published its Bonjour
+        // service, so the Mac had nothing to discover. One turn of the queue
+        // is enough for the port to come free.
+        let generation = listenerGeneration
+        queue.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, generation == self.listenerGeneration else { return }
+            self.startListener()
+        }
     }
 
     /// The UDP cursor listener follows the TCP listener's lifecycle: created
@@ -651,7 +666,18 @@ final class StreamReceiver: ObservableObject {
             params.serviceClass = .interactiveVideo
             listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         } catch {
-            setStatus("Listener failed: \(error.localizedDescription)")
+            // A throwing bind used to be terminal: status set, return, no
+            // listener and no retry. EADDRINUSE is transient (the previous
+            // listener's port is still releasing), so retry instead of
+            // leaving the app silently undiscoverable.
+            Log.info("listener bind failed: \(error) — retrying in 1s")
+            setStatus("Listener failed — restarting…")
+            listenerHealthy = false
+            let generation = listenerGeneration
+            queue.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self, generation == self.listenerGeneration else { return }
+                self.restartListener()
+            }
             return
         }
         // Advertise on the local network so the Mac can discover us for WiFi
@@ -718,7 +744,14 @@ final class StreamReceiver: ObservableObject {
                 Log.info("listener failed: \(error) — restarting in 1s")
                 self.listenerHealthy = false
                 self.setStatus("Listener failed — restarting…")
-                self.queue.asyncAfter(deadline: .now() + 1) { self.restartListener() }
+                // Generation-guarded: a foreground ensureListening() often
+                // restarts first, and without this both restarts ran and the
+                // second hit EADDRINUSE.
+                let generation = self.listenerGeneration
+                self.queue.asyncAfter(deadline: .now() + 1) {
+                    guard generation == self.listenerGeneration else { return }
+                    self.restartListener()
+                }
             case .cancelled:
                 self.listenerHealthy = false
             default: break
