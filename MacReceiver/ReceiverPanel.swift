@@ -31,6 +31,7 @@ struct ReceiverSections: View {
 
         if let receiver = controller.receiver {
             ReceiverAudioSection(receiver: receiver)
+            ReceiverSessionSection(receiver: receiver)
         }
 
         Section("How to connect") {
@@ -58,6 +59,45 @@ struct ReceiverAudioSection: View {
             Toggle("Mute audio", isOn: $receiver.audioMuted)
         } footer: {
             Text("Silences audio sent from the other Mac. The stream keeps running, so unmuting resumes in sync. Audio arrives only if the sending Mac has it switched on.")
+        }
+    }
+}
+
+/// Control the connected sender's session from this end.
+///
+/// Only useful against an iOS broadcast: a phone mirroring its screen has no
+/// control surface a Mac watching the stream can reach — the user would have
+/// to pick up the phone and tap the status bar. A Mac sender ignores these
+/// messages, which is the additive behaviour every unknown control type
+/// already gets.
+struct ReceiverSessionSection: View {
+    @ObservedObject var receiver: StreamReceiver
+    @State private var paused = false
+
+    var body: some View {
+        // Always a Section, never a bare view: this sits in a Form alongside
+        // other Sections, and a loose view among them stopped the whole group
+        // from rendering — the controls never appeared at all.
+        Section {
+            if receiver.connected {
+                Button(paused ? "Resume mirroring" : "Pause mirroring") {
+                    paused.toggle()
+                    receiver.sendBroadcastPaused(paused)
+                }
+                Button("Stop mirroring", role: .destructive) {
+                    // A stopped session is not a paused one; leaving the flag
+                    // set would open the next session showing "Resume".
+                    paused = false
+                    receiver.sendStopBroadcast()
+                }
+            } else {
+                Text("Connect a device to control its session.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Session")
+        } footer: {
+            Text("Pause holds the picture without ending the session, so resuming is immediate. Stop ends it on the sending device — useful when that device is a phone mirroring its screen and is not in reach. A Mac sender ignores both.")
         }
     }
 }
