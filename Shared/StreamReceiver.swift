@@ -150,7 +150,15 @@ final class StreamReceiver: ObservableObject {
     // The cable upgrade (PROTOCOL.md 6.4) is Mac-to-Mac: only Mac
     // receivers put addrs in their hello — see sendHello for why phones
     // must not.
-    private var advertisesAddresses: Bool { deviceKind == "Mac" }
+    /// Every receiver advertises its addresses.
+    ///
+    /// This was Mac-only: a cabled phone reaches the sender over usbmuxd, so
+    /// advertising its WiFi fe80 invited a false "upgrade" onto a bridged path
+    /// that still crossed the radio. Link-local addresses now sort last and
+    /// the sender classifies a candidate before migrating, so the phone's
+    /// routable address is worth offering — on a network where Bonjour
+    /// resolves over AWDL it is the only one that can carry the stream.
+    private var advertisesAddresses: Bool { true }
     private var lastCursorSeq: UInt64 = 0
     // Cursor channel health for the HUD/stats: how many positions landed and
     // how many datagrams never did (sequence gaps + reordered drops). A
@@ -1050,7 +1058,10 @@ final class StreamReceiver: ObservableObject {
             if !result.contains(addr) { result.append(addr) }
             if result.count >= 12 { break }
         }
-        return result
+        // Link-local last: 169.254.* and fe80:: carry no traffic between two
+        // devices that are actually routed to each other, and offering them
+        // first is what made the sender dial a dead path.
+        return WireAddress.prioritised(result)
     }
 
     /// Touch events: x/y normalized [0,1] in video space, origin top-left.
