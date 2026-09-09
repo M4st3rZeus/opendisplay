@@ -94,6 +94,12 @@ struct SendScreen: View {
                                            : "Start mirroring to “\(target!)”")
                             .foregroundStyle(target == nil ? .secondary : .primary)
                     }
+                    // The label greyed out without a target but the picker
+                    // still opened the system sheet, and a broadcast started
+                    // with no target set dies immediately in
+                    // broadcastStarted — disable the control itself, not just
+                    // its caption.
+                    .disabled(target == nil)
                 } footer: {
                     Text("Your entire screen is mirrored — everything you see, in every app — until you stop it from the red indicator in the status bar. Mirroring is view-only: touches on the other device are not sent back.")
                 }
