@@ -15,8 +15,13 @@ import ReplayKit
 /// same reason the Mac's WiFi picker matches by name.)
 final class ReceiverBrowser: ObservableObject {
     @Published var names: [String] = []
+    /// Address per name, for receivers the unicast sweep found. Bonjour
+    /// results have no entry — they resolve by service name as before.
+    @Published var addresses: [String: String] = [:]
     private var browser: NWBrowser?
     private var ownName = ""
+    private var sweepTimer: Timer?
+    private var bonjourNames: [String] = []
 
     func start(excluding own: String) {
         ownName = own
@@ -34,16 +39,49 @@ final class ReceiverBrowser: ObservableObject {
                       name != self.ownName else { return nil }
                 return name
             }
-            let sorted = Array(Set(names)).sorted()
-            DispatchQueue.main.async { self.names = sorted }
+            DispatchQueue.main.async {
+                self.bonjourNames = names
+                self.merge()
+            }
         }
         browser.start(queue: .main)
         self.browser = browser
+        startSweeps()
     }
 
     func stop() {
         browser?.cancel()
         browser = nil
+        sweepTimer?.invalidate()
+        sweepTimer = nil
+    }
+
+    /// Sweep alongside Bonjour, for networks whose access point drops
+    /// multicast between clients — there NWBrowser returns nothing and this
+    /// is the only way to see the receiver (see UnicastDiscovery).
+    private func startSweeps() {
+        sweepTimer?.invalidate()
+        sweep()
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.sweep()
+        }
+    }
+
+    private func sweep() {
+        UnicastDiscovery.sweep(queue: .global(qos: .utility)) { [weak self] found in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                for f in found where f.name != self.ownName {
+                    self.addresses[f.name] = f.host
+                }
+                self.merge()
+            }
+        }
+    }
+
+    private func merge() {
+        let all = Set(bonjourNames).union(addresses.keys).subtracting([ownName])
+        names = all.sorted()
     }
 }
 
@@ -68,6 +106,10 @@ struct SendScreen: View {
                         Button {
                             target = name
                             BroadcastTarget.serviceName = name
+                            // Record the address for sweep-discovered
+                            // receivers, and clear it for Bonjour ones so a
+                            // stale lease is never dialled.
+                            BroadcastTarget.address = browser.addresses[name]
                         } label: {
                             HStack {
                                 Label(name, systemImage: "ipad.landscape")
