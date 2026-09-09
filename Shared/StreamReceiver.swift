@@ -1123,6 +1123,32 @@ final class StreamReceiver: ObservableObject {
         sendControl(msg)
     }
 
+    // MARK: - Session control (receiver -> sender)
+
+    /// Ask the sender to end the session.
+    ///
+    /// For the iOS broadcast extension this is the only way to stop it from
+    /// the receiving end: the phone's own control is the system status bar,
+    /// and a Mac watching the stream has no way to reach it. The extension
+    /// turns this into finishBroadcastWithError, so the user sees why the
+    /// recording indicator went away.
+    ///
+    /// Additive: a sender that does not know the message ignores it, and the
+    /// receiver has no way to tell — the session simply keeps running, which
+    /// is the pre-existing behaviour.
+    func sendStopBroadcast() {
+        Log.info("asking the sender to stop")
+        sendControl(["type": WireMessage.stopBroadcast])
+    }
+
+    /// Ask the sender to stop or resume sending frames without ending the
+    /// session, so the link and its negotiated state survive.
+    func sendBroadcastPaused(_ paused: Bool) {
+        Log.info(paused ? "asking the sender to pause" : "asking the sender to resume")
+        sendControl(["type": paused ? WireMessage.pauseBroadcast
+                                    : WireMessage.resumeBroadcast])
+    }
+
     /// Two-finger scroll: dx/dy in video pixels (natural-scrolling sign).
     func sendScroll(dx: Double, dy: Double) {
         sendControl(["type": "scroll", "dx": dx, "dy": dy])
