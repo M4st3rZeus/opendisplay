@@ -75,29 +75,37 @@ struct ReceiverSessionSection: View {
     @State private var paused = false
 
     var body: some View {
-        if receiver.connected {
-            Section {
+        // Always a Section, never a bare view: this sits in a Form alongside
+        // other Sections, and a loose view among them stopped the whole group
+        // from rendering — the controls never appeared at all.
+        Section {
+            if receiver.connected {
                 Button(paused ? "Resume mirroring" : "Pause mirroring") {
                     paused.toggle()
                     receiver.sendBroadcastPaused(paused)
                 }
                 Button("Stop mirroring", role: .destructive) {
+                    // A stopped session is not a paused one; leaving the flag
+                    // set would open the next session showing "Resume".
+                    paused = false
                     receiver.sendStopBroadcast()
                 }
-            } header: {
-                Text("Session")
-            } footer: {
-                Text("Pause holds the picture without ending the session, so resuming is immediate. Stop ends it on the sending device — useful when that device is a phone mirroring its screen and is not in reach. A Mac sender ignores both.")
+            } else {
+                Text("Connect a device to control its session.")
+                    .foregroundStyle(.secondary)
             }
+        } header: {
+            Text("Session")
+        } footer: {
+            Text("Pause holds the picture without ending the session, so resuming is immediate. Stop ends it on the sending device — useful when that device is a phone mirroring its screen and is not in reach. A Mac sender ignores both.")
         }
-        // Outside the `if`: the modifier has to survive the disconnect that
-        // removes the section, or the flag stays set and the next session
-        // opens showing "Resume" for a stream that is already running.
-        Color.clear
-            .frame(height: 0)
-            .onChange(of: receiver.connected) { isConnected in
-                if !isConnected { paused = false }
-            }
+        // A session that ends on its own leaves the flag set, and the next one
+        // would open offering "Resume" for a stream that is already running.
+        // On the Section rather than a sibling view: a loose view among the
+        // Form's sections stopped the whole group from rendering.
+        .onChange(of: receiver.connected) { isConnected in
+            if !isConnected { paused = false }
+        }
     }
 }
 
