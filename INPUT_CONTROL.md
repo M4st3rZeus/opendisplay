@@ -163,11 +163,30 @@ and the `0x22` descriptor-type tag inside `0206` — hits it.
 `0206 - HIDDescriptorList` crashes for the same reason: its inner sequence
 starts with `Data([0x22])`, a one-byte value.
 
-That leaves one thing to find: how to express a single-byte unsigned integer
-so this API encodes it safely. `NSNumber` works for a bool-typed attribute,
-so the likely answer is `NSNumber` for the integer-typed ones too, with the
-element size left to the framework. Untested — the daemon went down before
-that run.
+### Fourth attempt: scalars fixed, descriptor list still crashes
+
+`NSNumber` is the answer for the scalar attributes:
+
+| value | result |
+| --- | --- |
+| `0202` as `NSNumber(value: 0x40)` | OK |
+| `0202` as a plain Swift `Int` | OK |
+| `0203` as `NSNumber(value: 0x21)` | OK |
+| `0206` descriptor list with an `NSNumber` type tag | **crashes** |
+
+So every single-byte scalar attribute can be published safely by handing the
+framework a number and letting it choose the element size. That closes the
+one-byte `Data` problem.
+
+`0206 - HIDDescriptorList` still crashes with the tag as an `NSNumber`,
+which means it has a *second* trigger independent of byte width — most
+likely its shape, a sequence nested inside a sequence, rather than any value
+inside it. Untested: whether the nesting itself is the problem, or the
+pairing of a number with a long blob inside one inner sequence.
+
+This is the attribute a keyboard cannot ship without: it carries the report
+descriptor that tells the host what the key reports look like. Everything
+else in the record now publishes.
 
 The harness itself is worth reusing — it caught the dead daemon immediately
 and cost nothing, where the first attempt spent dozens of runs measuring one.
@@ -179,11 +198,17 @@ settings — which this spike never got to.
 
 ## If someone picks this up again
 
-Start from the shorthand encoding and the core record above, which is known
-to publish, and never put a one-byte `Data` in a record — that is the crash.
-The open question is how to express a single-byte unsigned integer instead;
-try `NSNumber(value: 0x40)` for `0202` first, since `NSNumber` already works
-for the bool-typed attributes.
+Start from the shorthand encoding and the core record above, and use
+`NSNumber` for every scalar — never a one-byte `Data`, which aborts the
+daemon.
+
+The one attribute left is `0206 - HIDDescriptorList`, which crashes even
+with an `NSNumber` tag. Vary its *shape* rather than its values: a single
+flat sequence instead of a sequence of sequences, the blob alone with no
+tag, a short blob to rule out length. If no shape publishes, this API cannot
+express a HID descriptor and the classic route is closed after all — which
+would be a genuine answer, since KeyPad proves some path exists and this
+would rule this one out.
 
 Keep the crash-budget harness, with one fix: its staleness gate rejects a
 daemon under 20 seconds old, which reads identically to "daemon unhealthy"
