@@ -103,15 +103,42 @@ were measuring a dead daemon rather than the records. A "canary publish"
 health check was not sufficient either — it passed while real publishes
 failed.
 
-Two things did survive re-testing and are worth keeping:
+One thing survived re-testing: a failure poisons the rest of the process.
+After the first nil return, later publishes in the same process fail
+regardless of content, so every test needs a fresh process per case.
 
-- `IOBluetoothSDPServiceRecord.publishedServiceRecordWithDictionary:` wants
-  explicit `DataElementType` / `DataElementSize` / `DataElementValue`
-  dictionaries. The shorthand `Data([...])` form is what most of the early
-  failures were, not attribute rejection.
-- A failure poisons the rest of the process: after the first nil return,
-  subsequent publishes in the same process fail regardless of content. Any
-  future test must use one fresh process per case.
+### Second attempt, with a crash budget
+
+A follow-up run used a harness that refuses to publish unless `bluetoothd`
+has been up for 20+ seconds, counts crash reports around every attempt, and
+halts the session after three. Crash reports stayed at 19 throughout, so
+every result below is a clean rejection rather than an abort — the first
+trustworthy attribute data from either attempt.
+
+It also overturned the earlier encoding claim. Explicit
+`DataElementType`/`Size`/`Value` dictionaries return nil for *every* record
+including the minimal one, while the shorthand form (nested `NSArray` =
+sequence, `Data` = UUID or blob, `String` = text) publishes. The earlier
+"explicit elements work" result was a daemon artifact. Shorthand is what the
+API wants.
+
+With each test preceded by a passing control publish:
+
+| record | result |
+| --- | --- |
+| core (service class, protocol list, browse group, language base, profile descriptor, additional protocol list, names) | OK |
+| core + version attributes (`0200`, `0201`, `020B`, all 2-byte `Data`) | OK |
+| core + flag attributes (`0202`-`0205`, `020C`-`020F`; `Bool` and 1-byte `Data`) | nil |
+| core + descriptor list (`0206`, `0207`) | nil |
+
+So a full HID-shaped record publishes right up to the point where it needs
+the attributes that make it a *keyboard* — the boot flags and the report
+descriptor. Which specific value kind is rejected (`Bool`, 1-byte `Data`, or
+the nested descriptor sequence) is the next question; that run was cut short
+when the daemon went down again and launchd throttled it (`runs = 19`).
+
+The harness itself is worth reusing — it caught the dead daemon immediately
+and cost nothing, where the first attempt spent dozens of runs measuring one.
 
 `IOBluetoothHostController.classOfDevice()` reads `0x0` on this machine no
 matter what is set, so it cannot be used to verify the setter. The only
@@ -120,10 +147,16 @@ settings — which this spike never got to.
 
 ## If someone picks this up again
 
-Work from the Bluetooth HID profile spec's SDP record structure rather than
-guessing at value shapes, one fresh process per attempt, and cap the number
-of publishes per daemon lifetime — the daemon is the fragile part, and
-crashing it costs the machine's Bluetooth, not just the test.
+Start from the shorthand encoding and the core record above, which is known
+to publish. The open question is narrow: which value kind in the flag and
+descriptor attributes is rejected. Test `Bool` versus `NSNumber(value: true)`
+versus 1-byte `Data` individually, one fresh process each, with a control
+publish before every case.
+
+Keep the crash-budget harness. The daemon is the fragile part — losing it
+costs the machine's Bluetooth, not just the test — and it can go down
+without producing a crash report, so a passing control publish immediately
+before each result is the only way to trust that result.
 
 Worth knowing before starting: even when it works, iPhone gets pointer
 control only with AssistiveTouch enabled by the user (iPad gets a native
