@@ -41,8 +41,20 @@ class SampleHandler: RPBroadcastSampleHandler {
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer,
                                       with sampleBufferType: RPSampleBufferType) {
-        guard sampleBufferType == .video else { return }   // no audio on this wire
-        sender?.process(sampleBuffer)
+        switch sampleBufferType {
+        case .video:
+            sender?.process(sampleBuffer)
+        case .audioApp:
+            // What the apps on screen are playing — the counterpart of the
+            // Mac sender's system audio.
+            sender?.processAudio(sampleBuffer)
+        case .audioMic:
+            // Deliberately dropped: the microphone is the room, not the
+            // screen, and forwarding it would be recording the user.
+            break
+        @unknown default:
+            break
+        }
     }
 
     /// End the broadcast with a message the system surfaces in its alert —

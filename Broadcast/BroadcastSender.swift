@@ -23,6 +23,7 @@ import Foundation
 import Network
 import VideoToolbox
 import CoreMedia
+import AVFoundation
 
 final class BroadcastSender {
 
@@ -56,6 +57,14 @@ final class BroadcastSender {
     // with a keyframe instead of queueing.
     private var pendingSends = 0
     private let maxPendingSends = 3
+    /// Audio runs on its own queue: sharing the video queue would let an
+    /// encode hiccup on either stream stall the other, and video is the one
+    /// with a frame deadline.
+    private let audioQueue = DispatchQueue(label: "broadcast.audio")
+    /// Built lazily on the first audio buffer. The extension runs in a ~50 MB
+    /// process, so a broadcast that never carries audio never pays for it.
+    private var audioEncoder: AudioEncoder?
+    private var loggedAudioUnsupportedPeer = false
     private var dropsTotal = 0
 
     // Disconnect detection. Before the first connection we allow a longer
@@ -131,6 +140,84 @@ final class BroadcastSender {
 
     // MARK: - Capture input (called from ReplayKit's delivery thread)
 
+    /// Encode one ReplayKit audio buffer and put it on the wire.
+    ///
+    /// Best-effort throughout, like the Mac sender's equivalent: a receiver
+    /// too old for tagged frames, an encoder that will not build, or a backed
+    /// up socket each drop the audio and leave the picture streaming.
+    func processAudio(_ sampleBuffer: CMSampleBuffer) {
+        guard CMSampleBufferIsValid(sampleBuffer) else { return }
+        // Encode on the audio queue, then hop to `queue` to send. The
+        // connection, the framing latch and pendingSends are all owned by
+        // `queue`; reading them from here would be a data race, and the whole
+        // point of the separate queue is to keep the *encode* off the video
+        // path, not the socket write.
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            let encoder = self.audioEncoder ?? AudioEncoder()
+            self.audioEncoder = encoder
+
+            guard let format = sampleBuffer.formatDescription.map({ AVAudioFormat(cmAudioFormatDescription: $0) }),
+                  encoder.prepare(for: format),
+                  let pcm = Self.pcmBuffer(from: sampleBuffer, format: format),
+                  let encoded = encoder.encode(pcm) else { return }
+
+            // Wall clock, matching the video path's capture stamp: presentation
+            // timestamps are mach uptime, which would put audio on a different
+            // epoch from video and break the receiver's sync maths.
+            let packet = AudioPacket(codec: .aacLC,
+                                     hasConfig: encoded.hasConfig,
+                                     sampleRate: encoder.sampleRate,
+                                     channels: encoder.channels,
+                                     ptsMs: Date().timeIntervalSince1970 * 1000,
+                                     payload: encoded.data)
+            let bytes = packet.encoded()
+
+            self.queue.async {
+                guard !self.stopped, !self.paused, self.connectionReady else { return }
+                // Audio frames only exist in the tagged framing of protocol 4+.
+                // Sending one to an older receiver would be read as video and
+                // corrupt the decoder, so this gate is load-bearing.
+                guard self.peerSpeaksTaggedFrames else {
+                    if !self.loggedAudioUnsupportedPeer {
+                        self.loggedAudioUnsupportedPeer = true
+                        Log.info("audio: receiver predates tagged frames — audio not sent")
+                    }
+                    return
+                }
+                // Late audio is worse than absent audio: if the socket is
+                // already backed up, drop rather than deepen the queue.
+                guard self.pendingSends <= self.maxPendingSends else { return }
+                self.sendAudio(bytes)
+            }
+        }
+    }
+
+    /// Copy a captured audio buffer into a PCM buffer the converter accepts.
+    private static func pcmBuffer(from sampleBuffer: CMSampleBuffer,
+                                  format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let frames = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frames > 0,
+              let pcm = AVAudioPCMBuffer(pcmFormat: format,
+                                         frameCapacity: AVAudioFrameCount(frames)) else { return nil }
+        pcm.frameLength = AVAudioFrameCount(frames)
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer, at: 0, frameCount: Int32(frames),
+            into: pcm.mutableAudioBufferList)
+        guard status == noErr else { return nil }
+        return pcm
+    }
+
+    /// Frame and send an audio packet. Separate from `sendFramed` so audio
+    /// never touches the video path's pending-send accounting, which drives
+    /// keyframe and drop decisions.
+    private func sendAudio(_ payload: Data) {
+        guard let connection, connectionReady else { return }
+        let frame = FrameCodec.encode(payload, type: .audio,
+                                      tagged: peerSpeaksTaggedFrames)
+        connection.send(content: frame, completion: .contentProcessed { _ in })
+    }
+
     func process(_ sampleBuffer: CMSampleBuffer) {
         guard CMSampleBufferIsValid(sampleBuffer),
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
@@ -175,6 +262,8 @@ final class BroadcastSender {
                 // Back to legacy framing until this receiver identifies
                 // itself: a reconnect may reach a different device.
                 self.peerSpeaksTaggedFrames = false
+                self.loggedAudioUnsupportedPeer = false
+                self.audioQueue.async { self.audioEncoder?.reset() }
                 self.everConnected = true
                 self.disconnectedSince = nil
                 self.needsKeyframe = true   // new peer needs SPS/PPS + IDR
