@@ -278,30 +278,10 @@ enum UnicastDiscovery {
         return result
     }
 
-    /// IPv4 neighbours from the ARP cache. Cheap, and on a healthy network
-    /// these answer first.
-    private static func neighbourAddresses() -> [String] {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
-        task.arguments = ["-an"]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        do { try task.run() } catch { return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
+    /// Neighbours are not enumerated separately: `subnetAddresses()` already
+    /// covers every host in the local subnet, which is a superset of the ARP
+    /// cache. Shelling out to arp(8) also does not work on iOS, and this file
+    /// is shared with the broadcast extension.
+    private static func neighbourAddresses() -> [String] { [] }
 
-        var result: [String] = []
-        for line in text.split(separator: "\n") {
-            // ? (192.168.0.200) at d6:dc:88:b3:7d:c2 on en0 …
-            guard let open = line.firstIndex(of: "("),
-                  let close = line.firstIndex(of: ")"), open < close else { continue }
-            let addr = String(line[line.index(after: open)..<close])
-            guard !addr.isEmpty, !addr.hasSuffix(".255"), addr != "0.0.0.0",
-                  !addr.hasPrefix("224."), !result.contains(addr) else { continue }
-            result.append(addr)
-        }
-        return result
-    }
 }

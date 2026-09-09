@@ -28,11 +28,27 @@ enum BroadcastTarget {
     static let extensionBundleID = "\(appBundleID).broadcast"
 
     private static let serviceKey = "broadcastTargetService"
+    private static let addressKey = "broadcastTargetAddress"
 
     /// Bonjour service name of the receiver to stream to. Nil until the user
     /// picks a device in the app.
     static var serviceName: String? {
         get { UserDefaults(suiteName: appGroupID)?.string(forKey: serviceKey) }
         set { UserDefaults(suiteName: appGroupID)?.set(newValue, forKey: serviceKey) }
+    }
+
+    /// Address of the chosen receiver, when the app found it by unicast
+    /// sweep rather than Bonjour.
+    ///
+    /// Dialling `NWEndpoint.service(name:)` needs multicast to resolve, which
+    /// is exactly what is missing on the networks the sweep exists for: the
+    /// app could list the receiver and the extension still could not reach
+    /// it. With an address the extension dials host:port directly.
+    ///
+    /// Nil for a Bonjour-discovered target — resolution works there, and the
+    /// service name survives the receiver changing address.
+    static var address: String? {
+        get { UserDefaults(suiteName: appGroupID)?.string(forKey: addressKey) }
+        set { UserDefaults(suiteName: appGroupID)?.set(newValue, forKey: addressKey) }
     }
 }

@@ -17,7 +17,8 @@ class SampleHandler: RPBroadcastSampleHandler {
             return
         }
         Log.info("broadcast started -> \(target)")
-        let sender = BroadcastSender(targetService: target)
+        let sender = BroadcastSender(targetService: target,
+                                     targetAddress: BroadcastTarget.address)
         sender.onFatal = { [weak self] message in self?.finish(message) }
         self.sender = sender
         sender.start()
