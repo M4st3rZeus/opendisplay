@@ -60,3 +60,24 @@ enum WireMessage {
     static let sleeping = "sleeping"                // phone -> Mac: device locked, reconnect on wake
     static let closing = "closing"                  // phone -> Mac: app quit, end the session for good
 }
+
+/// Ordering for `hello.addrs` (PROTOCOL.md 6.4).
+///
+/// Pure string logic, kept here so it is covered by the hostless test bundle
+/// rather than needing a live interface enumeration.
+enum WireAddress {
+    /// 169.254.0.0/16 and fe80::/10 — reachable only on the same physical
+    /// link, so useless to a sender that has to route to us.
+    static func isLinkLocal(_ addr: String) -> Bool {
+        addr.hasPrefix("169.254.") || addr.lowercased().hasPrefix("fe80:")
+    }
+
+    /// Routable addresses first, link-local last.
+    ///
+    /// On a network where Bonjour resolves the service over AWDL, the only
+    /// addresses offered were fe80:: and 169.254.* — the sender dialled those
+    /// and never reached the peer, while its routable address pinged fine.
+    static func prioritised(_ addrs: [String]) -> [String] {
+        addrs.sorted { !isLinkLocal($0) && isLinkLocal($1) }
+    }
+}

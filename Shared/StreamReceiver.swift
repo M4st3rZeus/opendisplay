@@ -150,7 +150,15 @@ final class StreamReceiver: ObservableObject {
     // The cable upgrade (PROTOCOL.md 6.4) is Mac-to-Mac: only Mac
     // receivers put addrs in their hello — see sendHello for why phones
     // must not.
-    private var advertisesAddresses: Bool { deviceKind == "Mac" }
+    /// Every receiver advertises its addresses.
+    ///
+    /// This was Mac-only: a cabled phone reaches the sender over usbmuxd, so
+    /// advertising its WiFi fe80 invited a false "upgrade" onto a bridged path
+    /// that still crossed the radio. Link-local addresses are now sorted last
+    /// and the sender classifies before migrating, so the phone's routable
+    /// address is worth offering — on a network where Bonjour resolves over
+    /// AWDL it is the only address that can actually carry the stream.
+    private var advertisesAddresses: Bool { true }
     private var lastCursorSeq: UInt64 = 0
     // Cursor channel health for the HUD/stats: how many positions landed and
     // how many datagrams never did (sequence gaps + reordered drops). A
@@ -915,6 +923,16 @@ final class StreamReceiver: ObservableObject {
                 ?? "Update OpenDisplay from the App Store to keep using your second display."
             let store = (obj["store"] as? String).flatMap { URL(string: $0) } ?? AppStore.updateURL
             DispatchQueue.main.async { self.peerSignal = .updateReceiver(message: message, storeURL: store) }
+        case WireMessage.closing:
+            // The sender is going away deliberately (iOS broadcast stopped).
+            // Clear videoSize as well as `connected`: the streaming state is
+            // `connected && videoSize != .zero`, and videoSize survives a
+            // disconnect on purpose (#233, so a watchdog reconnect does not
+            // flash the idle UI). Without clearing it here the window kept
+            // showing the last frame after the phone stopped broadcasting.
+            Log.info("sender announced closing — ending session")
+            DispatchQueue.main.async { self.videoSize = .zero }
+            setConnected(false)
         default:
             break
         }
@@ -1018,6 +1036,8 @@ final class StreamReceiver: ObservableObject {
     /// it to each of its own candidate interfaces when probing. Virtual and
     /// peer-to-peer interfaces (awdl/llw/utun) never carry this traffic and
     /// are skipped.
+
+
     private static func reachableAddresses() -> [String] {
         var result: [String] = []
         var list: UnsafeMutablePointer<ifaddrs>?
@@ -1047,10 +1067,19 @@ final class StreamReceiver: ObservableObject {
             // getnameinfo appends %scope to link-local IPv6 — strip it, the
             // receiver-side zone id is meaningless to the sender.
             if let percent = addr.firstIndex(of: "%") { addr = String(addr[..<percent]) }
+            // Routable addresses first. On a network where the two devices sit
+            // on the same subnet but Bonjour resolves the service over AWDL,
+            // the only addresses offered were fe80:: and 169.254.* — the
+            // sender dialled those and never reached the peer even though its
+            // 192.168.x address pinged fine. Sorting puts a globally scoped
+            // address ahead of link-local so the probe tries what can work.
             if !result.contains(addr) { result.append(addr) }
             if result.count >= 12 { break }
         }
-        return result
+        // Link-local last: 169.254.* (IPv4 self-assigned) and fe80:: carry no
+        // traffic between two devices that are actually routed to each other,
+        // and offering them first is what made the sender dial a dead path.
+        return WireAddress.prioritised(result)
     }
 
     /// Touch events: x/y normalized [0,1] in video space, origin top-left.
