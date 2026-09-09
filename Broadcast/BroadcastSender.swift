@@ -123,6 +123,13 @@ final class BroadcastSender {
             self.pingTimer = nil
             self.watchdogTimer?.cancel()
             self.watchdogTimer = nil
+            // Announce before cancelling. iOS tears the extension's process
+            // down as soon as broadcastFinished returns, so a bare cancel
+            // often never reaches the receiver as a FIN — it kept showing the
+            // last frame indefinitely. `closing` is the same message the iOS
+            // receiver already sends when its app quits, and MacSender already
+            // handles it, so the receiver needs no new vocabulary.
+            self.sendJSONFrame("{\"type\":\"\(WireMessage.closing)\"}")
             self.connection?.cancel()
             self.connection = nil
             if let encoder = self.encoder { VTCompressionSessionInvalidate(encoder) }
