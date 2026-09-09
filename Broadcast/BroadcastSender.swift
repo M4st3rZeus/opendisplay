@@ -34,6 +34,7 @@ final class BroadcastSender {
 
     private let queue = DispatchQueue(label: "broadcast.video")
     private let targetService: String
+    private let targetAddress: String?
     private let startCode: [UInt8] = [0, 0, 0, 1]
 
     private var connection: NWConnection?
@@ -102,8 +103,9 @@ final class BroadcastSender {
     // the balanced Mac preset shows 10 Mbps reads fine at that size.
     private let bitrate = 10_000_000
 
-    init(targetService: String) {
+    init(targetService: String, targetAddress: String? = nil) {
         self.targetService = targetService
+        self.targetAddress = targetAddress
     }
 
     // MARK: - Lifecycle
@@ -272,9 +274,20 @@ final class BroadcastSender {
 
     private func connect() {
         guard !stopped else { return }
-        let endpoint = NWEndpoint.service(name: targetService,
-                                          type: "_opensidecar._tcp",
-                                          domain: "local.", interface: nil)
+        // Prefer a known address: resolving a service name needs multicast,
+        // which the networks the unicast sweep exists for do not deliver — the
+        // app could list the receiver while the extension still could not
+        // reach it. Falls back to Bonjour resolution when no address was
+        // recorded, which is the normal case.
+        let endpoint: NWEndpoint
+        if let address = targetAddress, !address.isEmpty {
+            endpoint = .hostPort(host: NWEndpoint.Host(address),
+                                 port: NWEndpoint.Port(rawValue: 9000)!)
+        } else {
+            endpoint = .service(name: targetService,
+                                type: "_opensidecar._tcp",
+                                domain: "local.", interface: nil)
+        }
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true   // latency matters more than throughput here
         let params = NWParameters(tls: nil, tcp: tcp)

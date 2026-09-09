@@ -160,7 +160,7 @@ targets:
       - Shared/FrameCodec.swift
       - Shared/AudioPacket.swift
       - Shared/AudioJitterBuffer.swift
-      - Mac/UnicastDiscovery.swift
+      - Shared/UnicastDiscovery.swift
     settings:
       base:
         # A hostless test bundle: the sources under test are compiled straight
@@ -224,6 +224,7 @@ targets:
       # and frames it exactly as the Mac sender does.
       - Shared/AudioPacket.swift
       - Shared/AudioEncoder.swift
+      - Shared/UnicastDiscovery.swift
       # iOS/Log.swift references LogSnapshot for the diagnostics report.
       - Shared/LogSnapshot.swift
       - iOS/Log.swift
