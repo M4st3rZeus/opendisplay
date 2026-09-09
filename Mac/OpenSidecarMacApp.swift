@@ -99,6 +99,9 @@ enum MainWindow {
 enum ConnectionTarget: Hashable {
     case usb(udid: String?)           // wired via built-in usbmuxd; nil = first device
     case wifi(NWBrowser.Result)       // discovered via Bonjour
+    // Found by unicast mDNS on a network that drops multicast between
+    // clients, so NWBrowser never sees it (see UnicastDiscovery).
+    case host(name: String, address: String)
 
     /// Stable identity for sessions and persistence — survives Bonjour
     /// re-discovery (fresh NWBrowser.Result) and USB replugs (new DeviceID).
@@ -108,6 +111,9 @@ enum ConnectionTarget: Hashable {
         case .wifi(let result):
             if case .service(let name, _, _, _) = result.endpoint { return "wifi:\(name)" }
             return "wifi:unknown"
+        // Keyed by name, not address: the same receiver on a new DHCP lease
+        // is the same device and must reuse its session and display identity.
+        case .host(let name, _): return "wifi:\(name)"
         }
     }
 }
@@ -187,6 +193,10 @@ final class SenderController: ObservableObject {
 
     @Published var sessions: [DeviceSession] = []
     @Published var discovered: [NWBrowser.Result] = []
+    /// Receivers found by unicast mDNS, for networks where multicast never
+    /// arrives and `discovered` therefore stays empty (see UnicastDiscovery).
+    @Published var unicastFound: [UnicastDiscovery.Found] = []
+    private var sweepTimer: Timer?
     @Published var usbDevices: [UsbmuxDevice] = []
     // `-host x.x.x.x` / `-port n` bypass usbmuxd with a manual TCP endpoint
     // (debugging escape hatch, e.g. an iproxy or SSH tunnel).
@@ -279,6 +289,36 @@ final class SenderController: ObservableObject {
         }
         browser.start(queue: .main)
         self.browser = browser
+        startUnicastSweeps()
+    }
+
+    /// Sweep alongside Bonjour, every 5s.
+    ///
+    /// Cheap and idempotent: it queries only hosts already in the ARP cache
+    /// and merges by name, so on a network where Bonjour works this finds the
+    /// same devices and changes nothing. It is the only thing that finds a
+    /// receiver when the access point drops multicast between clients.
+    private func startUnicastSweeps() {
+        sweepTimer?.invalidate()
+        sweep()
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sweep() }
+        }
+    }
+
+    private func sweep() {
+        UnicastDiscovery.sweep(queue: .global(qos: .utility)) { [weak self] found in
+            Task { @MainActor in
+                guard let self else { return }
+                guard found != self.unicastFound else { return }
+                let names = found.map(\.name).sorted()
+                if !names.isEmpty {
+                    Log.info("unicast discovery found \(names.joined(separator: ", "))")
+                }
+                self.unicastFound = found
+                self.autoConnect()
+            }
+        }
     }
 
     // MARK: - Physical-device identity
@@ -363,6 +403,13 @@ final class SenderController: ObservableObject {
             if wifiRemembered.contains(target.sessionID),
                activeSession(coveringWiFi: result) == nil,
                !cabled(result) {
+                connect(to: target)
+            }
+        }
+        for f in unicastFound {
+            let target = ConnectionTarget.host(name: f.name, address: f.host)
+            if wifiRemembered.contains(target.sessionID),
+               session(for: target.sessionID) == nil {
                 connect(to: target)
             }
         }
@@ -492,6 +539,8 @@ final class SenderController: ObservableObject {
             return udid == nil ? "Manual (\(host):\(port))" : "iPhone / iPad"
         case .wifi(let result):
             return serviceName(of: result) ?? "WiFi device"
+        case .host(let name, _):
+            return name
         }
     }
 
@@ -551,7 +600,7 @@ final class SenderController: ObservableObject {
         // Connecting a device clears its "don't auto-connect" state.
         switch target {
         case .usb: usbDisabled.remove(id)
-        case .wifi: wifiRemembered.insert(id)
+        case .wifi, .host: wifiRemembered.insert(id)
         }
 
         let transport: SenderTransport
@@ -567,6 +616,11 @@ final class SenderController: ObservableObject {
             }
         case .wifi(let result):
             transport = .tcp(result.endpoint)
+        case .host(_, let address):
+            // Same dial path as Bonjour, just an address instead of a service:
+            // the receiver listens on 9000 either way.
+            transport = .tcp(.hostPort(host: NWEndpoint.Host(address),
+                                       port: NWEndpoint.Port(rawValue: 9000)!))
         }
 
         let name = label(for: target)
@@ -681,7 +735,7 @@ final class SenderController: ObservableObject {
     func disconnect(_ session: DeviceSession) {
         switch session.target {
         case .usb: usbDisabled.insert(session.id)
-        case .wifi: wifiRemembered.remove(session.id)
+        case .wifi, .host: wifiRemembered.remove(session.id)
         }
         // A migrated session is also reachable the other way — opt that side
         // out too, or auto-connect resurrects the device moments later.
@@ -783,6 +837,19 @@ final class SenderController: ObservableObject {
                 coveredSessionIDs.insert(covering.id)
             }
             entries.append(DeviceEntry(id: "service:\(name)", name: name,
+                                       usbTarget: nil, wifiTarget: target))
+        }
+        // Unicast-discovered receivers, minus anything Bonjour already listed
+        // or a cable already covers — matched by name, since that is what the
+        // session id is keyed on either way.
+        let listedNames = Set(entries.map(\.name)).union(mergedServices)
+        for f in unicastFound where !listedNames.contains(f.name) {
+            let target = ConnectionTarget.host(name: f.name, address: f.host)
+            coveredSessionIDs.insert(target.sessionID)
+            if let covering = session(for: target.sessionID) {
+                coveredSessionIDs.insert(covering.id)
+            }
+            entries.append(DeviceEntry(id: "service:\(f.name)", name: f.name,
                                        usbTarget: nil, wifiTarget: target))
         }
         // Sessions whose device vanished from discovery (e.g. Bonjour record
