@@ -133,9 +133,41 @@ With each test preceded by a passing control publish:
 
 So a full HID-shaped record publishes right up to the point where it needs
 the attributes that make it a *keyboard* — the boot flags and the report
-descriptor. Which specific value kind is rejected (`Bool`, 1-byte `Data`, or
-the nested descriptor sequence) is the next question; that run was cut short
-when the daemon went down again and launchd throttled it (`runs = 19`).
+descriptor.
+
+### Third attempt: the crash trigger, identified
+
+A run isolating one value kind per process found it. Testing the *same*
+attribute (`0202`) with different value encodings:
+
+| value | result |
+| --- | --- |
+| `true` (Swift `Bool`) | OK |
+| `NSNumber(value: true)` | OK |
+| `NSNumber(value: 1)` | OK |
+| `Data([0x40])` — one byte | **crashes `bluetoothd`** |
+| `Data([0x00, 0x40])` — two bytes | OK |
+| `Data([0x0C, 0x80])` on `020C` | OK |
+
+**A one-byte `Data` value crashes the daemon.** Not a rejection — an abort,
+confirmed by the crash-report count rising across the attempt while the
+two-byte form of the same attribute publishes cleanly. `Bool` was never the
+problem; the earlier "flags are rejected" result was one bad byte in a group
+of eight attributes.
+
+This is the root cause of every crash in this spike, including the ones that
+invalidated the first attempt's bisection. Every HID attribute the spec
+defines as a single byte — `0202` HIDDeviceSubclass, `0203` HIDCountryCode,
+and the `0x22` descriptor-type tag inside `0206` — hits it.
+
+`0206 - HIDDescriptorList` crashes for the same reason: its inner sequence
+starts with `Data([0x22])`, a one-byte value.
+
+That leaves one thing to find: how to express a single-byte unsigned integer
+so this API encodes it safely. `NSNumber` works for a bool-typed attribute,
+so the likely answer is `NSNumber` for the integer-typed ones too, with the
+element size left to the framework. Untested — the daemon went down before
+that run.
 
 The harness itself is worth reusing — it caught the dead daemon immediately
 and cost nothing, where the first attempt spent dozens of runs measuring one.
@@ -148,15 +180,21 @@ settings — which this spike never got to.
 ## If someone picks this up again
 
 Start from the shorthand encoding and the core record above, which is known
-to publish. The open question is narrow: which value kind in the flag and
-descriptor attributes is rejected. Test `Bool` versus `NSNumber(value: true)`
-versus 1-byte `Data` individually, one fresh process each, with a control
-publish before every case.
+to publish, and never put a one-byte `Data` in a record — that is the crash.
+The open question is how to express a single-byte unsigned integer instead;
+try `NSNumber(value: 0x40)` for `0202` first, since `NSNumber` already works
+for the bool-typed attributes.
 
-Keep the crash-budget harness. The daemon is the fragile part — losing it
-costs the machine's Bluetooth, not just the test — and it can go down
-without producing a crash report, so a passing control publish immediately
-before each result is the only way to trust that result.
+Keep the crash-budget harness, with one fix: its staleness gate rejects a
+daemon under 20 seconds old, which reads identically to "daemon unhealthy"
+in the output and cost a round of confusion. Distinguish the two.
+
+The daemon is the fragile part — losing it costs the machine's Bluetooth,
+not just the test — and it can go down without producing a crash report, so
+a passing control publish immediately before each result is the only way to
+trust that result. Recovery is automatic but slow, and launchd throttles it
+after enough restarts; `sudo launchctl kickstart -k system/com.apple.bluetoothd`
+forces it back.
 
 Worth knowing before starting: even when it works, iPhone gets pointer
 control only with AssistiveTouch enabled by the user (iPad gets a native
