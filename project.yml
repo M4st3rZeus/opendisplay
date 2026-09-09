@@ -160,6 +160,7 @@ targets:
       - Shared/FrameCodec.swift
       - Shared/AudioPacket.swift
       - Shared/AudioJitterBuffer.swift
+      - Mac/UnicastDiscovery.swift
     settings:
       base:
         # A hostless test bundle: the sources under test are compiled straight
