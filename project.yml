@@ -218,6 +218,11 @@ targets:
       - Broadcast
       - Shared/Protocol.swift
       - Shared/FrameCodec.swift
+      # Audio forwarding from the phone's screen (issue #12 on the iOS side):
+      # ReplayKit delivers app audio alongside video, so the extension encodes
+      # and frames it exactly as the Mac sender does.
+      - Shared/AudioPacket.swift
+      - Shared/AudioEncoder.swift
       # iOS/Log.swift references LogSnapshot for the diagnostics report.
       - Shared/LogSnapshot.swift
       - iOS/Log.swift

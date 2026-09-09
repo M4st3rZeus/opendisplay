@@ -1,13 +1,21 @@
 import AVFoundation
 import Foundation
 
-/// PCM → AAC-LC for the audio channel, kept out of MacSender so the sender
-/// stays about streaming and this stays about codecs.
+/// PCM → AAC-LC for the audio channel, kept out of the senders so they stay
+/// about streaming and this stays about codecs.
 ///
-/// ScreenCaptureKit hands us system audio as PCM; this converts it to AAC-LC
-/// at a fixed bitrate. Audio is ~1% of video's bandwidth, so there is nothing
-/// to gain from adapting it to the quality setting the way the video encoder
-/// does — a fixed rate is one less thing to get wrong.
+/// Shared by both capture sources: ScreenCaptureKit on the Mac and ReplayKit
+/// in the iOS broadcast extension. Both hand over PCM in whatever chunk size
+/// they please, which is why this accumulates whole 1024-sample frames rather
+/// than converting each buffer as it arrives (see `append`).
+///
+/// Fixed bitrate: audio is ~1% of video's bandwidth, so there is nothing to
+/// gain from adapting it to the quality setting the way the video encoder
+/// does — one less thing to get wrong.
+///
+/// AVFoundation-only by design. The broadcast extension runs in a ~50 MB
+/// process, and the Mac receiver builds at a much older deployment target
+/// than the sender, so nothing here may reach for a platform framework.
 final class AudioEncoder {
 
     /// AAC-LC, 128 kbps stereo. Comfortably transparent for desktop audio and
