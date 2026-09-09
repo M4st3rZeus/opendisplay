@@ -65,6 +65,9 @@ final class BroadcastSender {
     /// process, so a broadcast that never carries audio never pays for it.
     private var audioEncoder: AudioEncoder?
     private var loggedAudioUnsupportedPeer = false
+    /// Audio's own send budget, separate from the video counter above.
+    private var pendingAudioSends = 0
+    private let maxPendingAudioSends = 8
     private var dropsTotal = 0
 
     // Disconnect detection. Before the first connection we allow a longer
@@ -159,8 +162,12 @@ final class BroadcastSender {
 
             guard let format = sampleBuffer.formatDescription.map({ AVAudioFormat(cmAudioFormatDescription: $0) }),
                   encoder.prepare(for: format),
-                  let pcm = Self.pcmBuffer(from: sampleBuffer, format: format),
-                  let encoded = encoder.encode(pcm) else { return }
+                  let pcm = Self.pcmBuffer(from: sampleBuffer, format: format) else {
+                return
+            }
+            guard let encoded = encoder.encode(pcm) else {
+                return
+            }
 
             // Wall clock, matching the video path's capture stamp: presentation
             // timestamps are mach uptime, which would put audio on a different
@@ -174,7 +181,9 @@ final class BroadcastSender {
             let bytes = packet.encoded()
 
             self.queue.async {
-                guard !self.stopped, !self.paused, self.connectionReady else { return }
+                guard !self.stopped, !self.paused, self.connectionReady else {
+                    return
+                }
                 // Audio frames only exist in the tagged framing of protocol 4+.
                 // Sending one to an older receiver would be read as video and
                 // corrupt the decoder, so this gate is load-bearing.
@@ -185,13 +194,23 @@ final class BroadcastSender {
                     }
                     return
                 }
-                // Late audio is worse than absent audio: if the socket is
-                // already backed up, drop rather than deepen the queue.
-                guard self.pendingSends <= self.maxPendingSends else { return }
+                // Late audio is worse than absent audio, but the budget must be
+                // audio's own. `pendingSends` counts video, and this sender
+                // runs video at 10 Mbps: sharing that counter meant the queue
+                // was almost always at its limit and virtually every audio
+                // packet was dropped before it reached the socket — the
+                // extension encoded audio all session and sent none of it.
+                //
+                // An audio packet is ~150 bytes against a video frame's tens of
+                // kilobytes, so a few in flight cost nothing.
+                guard self.pendingAudioSends <= self.maxPendingAudioSends else {
+                    return
+                }
                 self.sendAudio(bytes)
             }
         }
     }
+
 
     /// Copy a captured audio buffer into a PCM buffer the converter accepts.
     private static func pcmBuffer(from sampleBuffer: CMSampleBuffer,
@@ -215,7 +234,11 @@ final class BroadcastSender {
         guard let connection, connectionReady else { return }
         let frame = FrameCodec.encode(payload, type: .audio,
                                       tagged: peerSpeaksTaggedFrames)
-        connection.send(content: frame, completion: .contentProcessed { _ in })
+        pendingAudioSends += 1
+        connection.send(content: frame, completion: .contentProcessed { [weak self] _ in
+            guard let self else { return }
+            self.queue.async { self.pendingAudioSends = max(0, self.pendingAudioSends - 1) }
+        })
     }
 
     func process(_ sampleBuffer: CMSampleBuffer) {

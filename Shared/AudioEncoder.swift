@@ -34,11 +34,57 @@ final class AudioEncoder {
     var sampleRate: Int { Int(outputFormat?.sampleRate ?? 0) }
     var channels: Int { Int(outputFormat?.channelCount ?? 0) }
 
+    /// The format everything is normalised to before encoding: Float32,
+    /// deinterleaved, at the source's rate and channel count.
+    ///
+    /// The two capture sources disagree. ScreenCaptureKit hands over
+    /// deinterleaved Float32, which `floatChannelData` reads directly;
+    /// ReplayKit hands over *interleaved Int16*, where `floatChannelData` is
+    /// nil and the per-channel copy in `append` silently copies nothing — the
+    /// encoder then saw no samples and returned nil for every buffer, so the
+    /// iOS sender encoded audio all session and sent none of it. Converting
+    /// up front means one path serves both.
+    private func canonicalFormat(matching format: AVAudioFormat) -> AVAudioFormat? {
+        AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,
+                      channels: format.channelCount)
+    }
+
+    private var inputConverter: AVAudioConverter?
+    private var inputConverterSource: AVAudioFormat?
+
+    /// Convert `pcm` to the canonical format when it is not already there.
+    private func normalise(_ pcm: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let canonical = canonicalFormat(matching: pcm.format) else { return nil }
+        if pcm.format == canonical { return pcm }
+
+        if inputConverter == nil || inputConverterSource != pcm.format {
+            inputConverter = AVAudioConverter(from: pcm.format, to: canonical)
+            inputConverterSource = pcm.format
+        }
+        guard let converter = inputConverter,
+              let out = AVAudioPCMBuffer(pcmFormat: canonical,
+                                         frameCapacity: pcm.frameLength) else { return nil }
+        var error: NSError?
+        var supplied = false
+        let status = converter.convert(to: out, error: &error) { _, outStatus in
+            if supplied { outStatus.pointee = .noDataNow; return nil }
+            supplied = true
+            outStatus.pointee = .haveData
+            return pcm
+        }
+        guard status == .haveData || status == .inputRanDry, out.frameLength > 0 else { return nil }
+        return out
+    }
+
     /// Build (or rebuild) the converter for `format`. Returns false if the
     /// format cannot be encoded, in which case the caller drops audio rather
     /// than sending something no receiver can read.
     @discardableResult
     func prepare(for format: AVAudioFormat) -> Bool {
+        // Against the canonical format, not the raw input: the encoder is fed
+        // normalised buffers, so building from an interleaved Int16
+        // description would mismatch what it actually receives.
+        guard let format = canonicalFormat(matching: format) else { return false }
         if let sourceFormat, sourceFormat == format, converter != nil { return true }
 
         var description = AudioStreamBasicDescription(
@@ -160,7 +206,9 @@ final class AudioEncoder {
         // short chunk makes it emit a stub packet a few bytes long instead of
         // nothing, and those went out as undecodable 6-byte payloads. Feeding
         // it only whole frames is what makes the output real AAC.
-        guard let staged = append(pcm) else { return nil }
+        // Normalise first: `append` copies via floatChannelData, which is nil
+        // for the interleaved Int16 ReplayKit delivers.
+        guard let normalised = normalise(pcm), let staged = append(normalised) else { return nil }
 
         var supplied = false
         var conversionError: NSError?
@@ -207,6 +255,8 @@ final class AudioEncoder {
     func reset() {
         converter?.reset()
         pending = nil   // stale samples would click on reconnect
+        inputConverter = nil
+        inputConverterSource = nil
         needsConfigFlag = true
     }
 }
