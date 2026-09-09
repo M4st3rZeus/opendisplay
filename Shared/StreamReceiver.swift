@@ -925,11 +925,10 @@ final class StreamReceiver: ObservableObject {
             DispatchQueue.main.async { self.peerSignal = .updateReceiver(message: message, storeURL: store) }
         case WireMessage.closing:
             // The sender is going away deliberately (iOS broadcast stopped).
-            // Clear videoSize as well as `connected`: the streaming state is
+            // Clear videoSize as well as `connected`: streaming state is
             // `connected && videoSize != .zero`, and videoSize survives a
             // disconnect on purpose (#233, so a watchdog reconnect does not
-            // flash the idle UI). Without clearing it here the window kept
-            // showing the last frame after the phone stopped broadcasting.
+            // flash the idle UI). Only an explicit close clears it.
             Log.info("sender announced closing — ending session")
             DispatchQueue.main.async { self.videoSize = .zero }
             setConnected(false)
