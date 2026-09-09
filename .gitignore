@@ -42,3 +42,6 @@ docs/
 
 # Local signing override (personal team) — see project-local.yml
 project-local.yml
+# Entitlements rebranded to that team's app group, so the tracked ones stay
+# on the upstream identifiers.
+.local-entitlements/
