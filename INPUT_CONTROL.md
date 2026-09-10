@@ -163,7 +163,80 @@ and the `0x22` descriptor-type tag inside `0206` — hits it.
 `0206 - HIDDescriptorList` crashes for the same reason: its inner sequence
 starts with `Data([0x22])`, a one-byte value.
 
-### Fourth attempt: scalars fixed, descriptor list still crashes
+### Everything above about crashes was self-inflicted
+
+Reading a working implementation first would have skipped all of it.
+[ArthurYidi/Bluetooth-Keyboard-Emulator](https://github.com/ArthurYidi/Bluetooth-Keyboard-Emulator)
+is a Swift HID keyboard emulator whose SDP record lives in a plist, and that
+plist shows four encoding mistakes behind every crash and rejection recorded
+below:
+
+| what this spike did | what actually works |
+| --- | --- |
+| `Data([0x40])` for scalar attributes | plain integers (`64`) — `Data` is only for UUIDs |
+| explicit `DataElementSize` | `DataElementSize: 0`, letting the framework size it |
+| `000D` inner sequence carrying a PSM integer | UUID only, no PSM |
+| BootDevice `020D`, RemoteWake `020E` | BootDevice `020E`, RemoteWake `020A` |
+
+Publishing that project's plist verbatim succeeded on the first try, and a
+combo keyboard+mouse variant of it published too — full HID record,
+descriptor list included, no crash. The one-byte `Data` abort was real but
+it was a reaction to malformed input, not a platform limit: the API wants an
+integer there.
+
+Across the whole corrected run the crash count never moved. Every crash
+earlier in this document came from hand-built records.
+
+### The actual blocker: the Mac will not advertise as a keyboard
+
+With the correct record published, both HID PSMs listening, and
+`setClassOfDevice(0x002540, 60)` re-armed on a timer, an iPhone was asked to
+pair:
+
+- It listed the Mac as **"MacBook Pro"** — its computer identity, not the
+  published service name — because the phone was already paired with this
+  Mac. Tapping it did nothing: iOS reused the existing computer pairing and
+  never consulted the HID record. No L2CAP channel ever opened.
+- After "Forget This Device" on the phone, the Mac **disappeared from the
+  list entirely**. The earlier visibility was the old pairing, never our
+  advertisement.
+- `system_profiler` reported `Discoverable: Off` the entire time, while
+  every `setClassOfDevice` call returned 0.
+
+So `setClassOfDevice` reports success and changes nothing observable, and
+the Mac never presents a peripheral/keyboard identity for a phone to pair
+with. `IOBluetoothHostController.classOfDevice()` reads `0x0` regardless of
+what is set, so it cannot be used as evidence either way — the phone is the
+only reliable oracle, which is why this needed a real pairing attempt.
+
+The reference implementation's own README says the same thing:
+
+> After the release of macOS Catalina (10.15), I'm unable to pair devices and
+> publish HID services using Bluetooth Classic.
+
+That project worked before Catalina. This test ran on macOS 26.6 and
+reproduced his failure exactly.
+
+### Conclusion
+
+Both Bluetooth paths fail at the same layer, which is what makes the result
+credible rather than two separate accidents: BLE refuses to publish the HID
+GATT service, and classic refuses to advertise a HID device identity. The
+transport works in both cases — the *identity* is system-owned.
+
+Everything except being discoverable as a keyboard now works, and that one
+piece is the whole feature.
+
+KeyPad (`com.toolbunch.keypad`) still ships this against iPhone from the Mac
+App Store, so a path exists — but it is not this one, and finding it would
+mean inspecting a shipping binary rather than writing more probes. That is
+where to start if this is ever picked up again.
+
+### Superseded: fourth attempt, scalars fixed, descriptor list still crashes
+
+Kept because it records how the crash was narrowed, but the premise is wrong
+— the descriptor list crash was the same malformed-input bug as the rest.
+
 
 `NSNumber` is the answer for the scalar attributes:
 
