@@ -152,6 +152,7 @@ targets:
       - MacTests
       - Mac/DisplayArrangement.swift
       - Mac/InputRouting.swift
+      - Shared/ReceiverGesture.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/LogSnapshot.swift
