@@ -1914,6 +1914,20 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                let y = obj["y"] as? Double {
                 inputInjector?.handleProximity(entering: entering, x: x, y: y)
             }
+        case "gesture":
+            guard let name = obj["name"] as? String,
+                  let gesture = ReceiverGesture(rawValue: name) else { return }
+            let inputAllowed = InputPolicy.allowsInput()
+            guard ReceiverGesture.shouldRoute(name: name, inputAllowed: inputAllowed),
+                  receiverInputIsAllowed() else { return }
+            // The receiver normally sent a touch cancellation immediately
+            // before this semantic message. Release again here as a safeguard
+            // against an in-flight or missing cancellation.
+            inputInjector?.cancelActiveInput()
+            Task { @MainActor in
+                guard InputPolicy.allowsInput() else { return }
+                SystemGestureInvoker.invoke(gesture)
+            }
         case "kf":
             // The phone's decoder lost sync (e.g. it attached mid-GOP and
             // periodic keyframes are off) — force an IDR on the next frame.
