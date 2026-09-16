@@ -333,6 +333,7 @@ Coordinates use the conventions of section 7.
 | `touch` | pv 1 | `phase`, `x`, `y`, `t`? | Finger input |
 | `scroll` | pv 1 | `dx`, `dy` | Two-finger scroll |
 | `gesture` | pv 1 | `name` | Semantic receiver gesture |
+| `displayState` | additive | `state` (`running` or `paused`) | Capture pause state for receiver UI/input gating |
 | `pencil` | pv 3 | `phase`, `x`, `y`, `pressure`, `azimuth`, `altitude`, `rotation`, `t`? | Stylus input |
 | `proximity` | pv 3 | `entering`, `x`, `y` | Stylus hover enter/leave |
 | `kf` | pv 1 | none | Request an IDR (section 5.3) |
@@ -416,6 +417,13 @@ four- and five-finger gestures require a meaningful change in fingertip
 spread. These semantic messages do not replace touch or scroll messages for
 ordinary input.
 This additive message does not require a protocol-version bump.
+
+**`displayState`** carries `paused` when the user pauses capture and
+`running` after every successful capture start, including initial capture,
+resume, mode replacement, and recovery. Receivers SHOULD keep the last video
+frame visible and indicate that the display is paused; they SHOULD ignore
+interactive input while paused. This is additive and unknown message types
+remain safe to ignore.
 
 **`pencil`** (pv 3) carries `phase` (string): `"down"`, `"move"`, `"up"`,
 or `"hover"`; `x`, `y`: normalized position; `pressure` (number): 0 to 1;
