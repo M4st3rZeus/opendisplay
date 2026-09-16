@@ -172,6 +172,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
     private var audioPacketsSent = 0
     private var audioDropsThisWindow = 0
+    // Audio's own send budget, separate from `pendingSends`. Incremented on
+    // `audioQueue` and decremented on the connection's completion queue, so it
+    // lives under `pipelineLock` like the video counters.
+    private var pendingAudioSends = 0
+    private let maxPendingAudioSends = 8
     private var loggedAudioUnsupportedPeer = false
     /// Whether this connection's receiver speaks tagged framing (protocol 4+).
     ///
@@ -969,9 +974,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             self.connection = nil
             self.closeCursorChannel()
             self.stopUpgradeProbing()
-            self.pendingSends = 0
             self.pipelineLock.lock()
+            self.pendingSends = 0
             self.pendingEncodes = 0
+            self.pendingAudioSends = 0
             self.pipelineLock.unlock()
             self.connect()
         }
@@ -1693,9 +1699,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         connection?.cancel()
         connection = nil
         closeCursorChannel()   // rebuilt from the next hello
-        pendingSends = 0
         pipelineLock.lock()
+        pendingSends = 0
         pendingEncodes = 0
+        pendingAudioSends = 0
         pipelineLock.unlock()
         queue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             // Generation-guarded so a switchTransport (or another reconnect)
@@ -2022,7 +2029,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 // ours are appended so a discrepancy between sent and arrived
                 // is visible on one line.
                 Log.info("PHONE-STATS \(line) | mac enc↓=\(dropsEncThisWindow) net↓=\(dropsNetThisWindow) pending=\(pendingSends)"
-                         + " aSent=\(audioPacketsSent) a↓=\(audioDropsThisWindow)")
+                         + " aSent=\(audioPacketsSent) a↓=\(audioDropsThisWindow)"
+                         + " aQ=\(pendingAudioSends)")
                 dropsEncThisWindow = 0
                 dropsNetThisWindow = 0
                 audioPacketsSent = 0
@@ -2428,10 +2436,17 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
 
-        // Late audio is worse than absent audio: if the socket is already
-        // backed up, drop this packet rather than deepening the queue.
+        // Late audio is worse than absent audio, but the budget must be audio's
+        // own. `pendingSends` counts video and is capped at 3, so a 4K or 5K
+        // stream sits at that limit whenever the link is busy; gating audio on
+        // it means audio is dropped precisely when video is under load, for a
+        // queue audio contributes nothing to. The iOS extension hit the
+        // extreme form of this and sent no audio at all for a whole session.
+        //
+        // An audio packet is ~150 bytes against a video frame's tens of
+        // kilobytes, so a few in flight cost nothing.
         pipelineLock.lock()
-        let backedUp = pendingSends >= maxPendingSends
+        let backedUp = pendingAudioSends >= maxPendingAudioSends
         pipelineLock.unlock()
         if backedUp {
             audioDropsThisWindow += 1
@@ -2487,7 +2502,15 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func sendAudio(_ payload: Data) {
         guard let connection, connectionReady else { return }
         let frame = FrameCodec.encode(payload, type: .audio, tagged: peerSpeaksTaggedFrames)
-        connection.send(content: frame, completion: .contentProcessed { _ in })
+        pipelineLock.lock()
+        pendingAudioSends += 1
+        pipelineLock.unlock()
+        connection.send(content: frame, completion: .contentProcessed { [weak self] _ in
+            guard let self else { return }
+            self.pipelineLock.lock()
+            self.pendingAudioSends = max(0, self.pendingAudioSends - 1)
+            self.pipelineLock.unlock()
+        })
     }
 
     private func isPipelineBackedUp() -> Bool {
