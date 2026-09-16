@@ -154,6 +154,7 @@ targets:
       - Mac/StreamNegotiation.swift
       - Mac/H264FrameRatePolicy.swift
       - Mac/FrameRate.swift
+      - Mac/InputRouting.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/LogSnapshot.swift

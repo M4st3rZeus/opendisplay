@@ -214,6 +214,13 @@ final class SenderController: ObservableObject {
         didSet { UserDefaults.standard.set(audioEnabled, forKey: "audioEnabled") }
     }
 
+    @Published var allowInput = InputPolicy.allowsInput() {
+        didSet {
+            UserDefaults.standard.set(allowInput, forKey: InputPolicy.defaultsKey)
+            if !allowInput { sessions.forEach { $0.sender.cancelActiveInput() } }
+        }
+    }
+
     @Published var frameRate = FrameRate(rawValue: UserDefaults.standard.integer(forKey: "frameRate")) ?? .fps60 {
         didSet { UserDefaults.standard.set(frameRate.rawValue, forKey: "frameRate") }
     }
@@ -1014,6 +1021,13 @@ struct ContentView: View {
                 .onChange(of: controller.mode) { controller.restartAll() }
 
                 VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Allow Input", isOn: $controller.allowInput)
+                    Text("Allow touch, scrolling, and pointer input from the connected device.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
                     Picker("Quality", selection: $controller.quality) {
                         ForEach(StreamQuality.allCases, id: \.self) { q in
                             Text(q.label).tag(q)
@@ -1220,4 +1234,3 @@ struct SessionRow: View {
         }
     }
 }
-
