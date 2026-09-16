@@ -333,10 +333,12 @@ Coordinates use the conventions of section 7.
 | `touch` | pv 1 | `phase`, `x`, `y`, `t`? | Finger input |
 | `scroll` | pv 1 | `dx`, `dy` | Two-finger scroll |
 | `gesture` | pv 1 | `name` | Semantic receiver gesture |
-| `displayState` | additive | `state` (`running` or `paused`) | Capture pause state for receiver UI/input gating |
 | `pencil` | pv 3 | `phase`, `x`, `y`, `pressure`, `azimuth`, `altitude`, `rotation`, `t`? | Stylus input |
 | `proximity` | pv 3 | `entering`, `x`, `y` | Stylus hover enter/leave |
 | `kf` | pv 1 | none | Request an IDR (section 5.3) |
+| `stopBroadcast` | additive | none | End the sending device's session now |
+| `pauseBroadcast` | additive | none | Stop sending frames, keep the session up |
+| `resumeBroadcast` | additive | none | Start sending frames again |
 | `stats` | pv 1 | free-form | Receiver-side telemetry for the sender's log |
 | `sleeping` | pv 2 | none | Device locked; session ends, reconnect on wake expected |
 | `closing` | pv 2 | none | App quit; session ends for good |
@@ -418,12 +420,28 @@ spread. These semantic messages do not replace touch or scroll messages for
 ordinary input.
 This additive message does not require a protocol-version bump.
 
-**`displayState`** carries `paused` when the user pauses capture and
-`running` after every successful capture start, including initial capture,
-resume, mode replacement, and recovery. Receivers SHOULD keep the last video
-frame visible and indicate that the display is paused; they SHOULD ignore
-interactive input while paused. This is additive and unknown message types
-remain safe to ignore.
+**`stopBroadcast`**, **`pauseBroadcast`** and **`resumeBroadcast`** carry no
+fields; the type is the whole message. They exist for the case where the
+sending device has no reachable control of its own: an iPhone or iPad
+mirroring its screen is driven by the system status bar, which a Mac watching
+the stream cannot touch. A receiver MAY offer these as session controls, and
+a sender that does not implement them logs and ignores them like any other
+unknown type — which is what the Mac sender does, since its session is
+controlled from its own window.
+
+`pauseBroadcast` stops frames without ending the session: the connection and
+the negotiated format stay up, so resuming costs no handshake. The official
+iOS sender gates audio on the same flag, so a paused broadcast is silent as
+well as still. `resumeBroadcast` MUST be followed by a keyframe, because the
+receiver's decoder has been starved and cannot resume from a delta frame.
+
+`stopBroadcast` ends the session on the sending device. The official iOS
+sender ends it the same way it ends on any fatal error, so the user is told
+why the broadcast stopped rather than watching the recording indicator
+vanish unexplained.
+
+These are additive and require no protocol-version bump: control messages
+already flowed in this direction before them.
 
 **`pencil`** (pv 3) carries `phase` (string): `"down"`, `"move"`, `"up"`,
 or `"hover"`; `x`, `y`: normalized position; `pressure` (number): 0 to 1;
@@ -465,6 +483,7 @@ section 4.
 | `cursor` | pv 1 | `x`?, `y`?, `v` | Cursor position/visibility |
 | `cursorImg` | pv 1 | `nw`, `nh`, `ax`, `ay`, `png` | Cursor sprite |
 | `welcome` | pv 2 | `pv`, `min` | Sender's side of the version handshake |
+| `displayState` | additive | `state` (`running` or `paused`) | Capture pause state for receiver UI and input gating |
 | `updateRequired` | pv 2 | `target`, `store`, `message` | Peer must update to continue |
 
 **`pong`** echoes the `t` from the receiver's `ping` unchanged and adds
@@ -585,6 +604,13 @@ still supports). Sent in response to every `hello`. A receiver whose own
 only party that can detect an outdated sender and SHOULD tell its user to
 update the sender. A receiver that never gets a `welcome` at all is talking
 to a pre-pv-2 sender and MUST assume sender `pv` 1.
+
+**`displayState`** carries `paused` when the user pauses capture and
+`running` after every successful capture start, including initial capture,
+resume, mode replacement, and recovery. Receivers SHOULD keep the last video
+frame visible and indicate that the display is paused; they SHOULD ignore
+interactive input while paused. This is additive and unknown message types
+remain safe to ignore.
 
 **`updateRequired`**: the sender declares the pairing unsupported until the
 receiver updates. `target` names the end that must act (`"ios"` today),
