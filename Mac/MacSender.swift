@@ -105,7 +105,6 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// encode hiccup on either stream stall the other, and video is the one
     /// with a frame deadline.
     private let audioQueue = DispatchQueue(label: "sender.audio")
-    private let startCode: [UInt8] = [0, 0, 0, 1]
 
     // The dial target. Written on `queue` only (after init): the controller
     // can migrate a live session between transports via switchTransport.
@@ -1720,10 +1719,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 let capFps = elapsed > 0 ? Int(Double(self.capFrames) / elapsed) : 0
                 self.capFrames = 0
                 self.capWindowStart = Date()
+                self.pipelineLock.lock()
                 let sorted = self.inputLatencies.sorted()
+                let pending = self.pendingSends
+                self.pipelineLock.unlock()
                 let inp50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2].rounded()
                 let inp95 = sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))].rounded()
-                self.sendJSONFrame("{\"type\":\"ping\",\"drops\":\(self.dropsTotal),\"encDrops\":\(self.dropsEncTotal),\"netDrops\":\(self.dropsNetTotal),\"pending\":\(self.pendingSends),\"inp50\":\(inp50),\"inp95\":\(inp95),\"capFps\":\(capFps)}")
+                self.sendJSONFrame("{\"type\":\"ping\",\"drops\":\(self.dropsTotal),\"encDrops\":\(self.dropsEncTotal),\"netDrops\":\(self.dropsNetTotal),\"pending\":\(pending),\"inp50\":\(inp50),\"inp95\":\(inp95),\"capFps\":\(capFps)}")
             }
             self.schedulePing()
         }
@@ -2105,8 +2107,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 if let t = obj["t"] as? Double {
                     let delta = Date().timeIntervalSince1970 * 1000 - t
                     if delta > -50, delta < 1000 {
+                        pipelineLock.lock()
                         inputLatencies.append(max(delta, 0))
                         if inputLatencies.count > 240 { inputLatencies.removeFirst(120) }
+                        pipelineLock.unlock()
                     }
                 }
             }
@@ -2129,8 +2133,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 if let t = obj["t"] as? Double {
                     let delta = Date().timeIntervalSince1970 * 1000 - t
                     if delta > -50, delta < 1000 {
+                        pipelineLock.lock()
                         inputLatencies.append(max(delta, 0))
                         if inputLatencies.count > 240 { inputLatencies.removeFirst(120) }
+                        pipelineLock.unlock()
                     }
                 }
             }
@@ -2394,8 +2400,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
         // No receiver, or a pipeline stage is backed up: skip this frame.
         guard connectionReady else { return }
-        if shouldDropFrame(reason: "pending_encode") { return }  // encoder busy
-        if shouldDropFrame(reason: "pending_sends") { return }   // TCP send queue full
+        if shouldDropFrame(.pendingEncode) { return }  // encoder busy
+        if shouldDropFrame(.pendingSends) { return }   // TCP send queue full
 
         encode(pixelBuffer, pts: CMSampleBufferGetPresentationTimeStamp(sampleBuffer), generation: generation)
     }
@@ -2525,29 +2531,32 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Pre-encode drops are invisible to the decoder — the H.264 reference
     /// chain stays intact, so the next frame can be a normal P-frame (n → n+2).
     /// Do NOT force keyframes here; that causes IDR pulsing / blockiness.
-    private func shouldDropFrame(reason: String) -> Bool {
+    /// Which backpressure gate a dropped frame hit, kept apart so the HUD can
+    /// show whether the encoder or the socket is the bottleneck.
+    private enum DropReason {
+        case pendingEncode
+        case pendingSends
+    }
+
+    private func shouldDropFrame(_ reason: DropReason) -> Bool {
         pipelineLock.lock()
         let drop: Bool
         switch reason {
-        case "pending_encode":
+        case .pendingEncode:
             drop = pendingEncodes >= maxPendingEncodes
-        case "pending_sends":
+        case .pendingSends:
             drop = pendingSends >= maxPendingSends
-        default:
-            drop = false
         }
         pipelineLock.unlock()
         guard drop else { return false }
         scheduleDropReplayTimer()
         switch reason {
-        case "pending_encode":
+        case .pendingEncode:
             dropsEncThisWindow += 1
             dropsEncTotal += 1
-        case "pending_sends":
+        case .pendingSends:
             dropsNetThisWindow += 1
             dropsNetTotal += 1
-        default:
-            break
         }
         return true
     }
@@ -2597,11 +2606,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 return
             }
             guard generation == self.captureGenerationNow else { return }
-            if let data = self.annexB(from: buffer) {
+            if let data = AnnexB.convert(buffer) {
                 let sndMs = Int64(Date().timeIntervalSince1970 * 1000)
-                var framed = Data("{\"cap\":\(capturedAtMs),\"snd\":\(sndMs)}".utf8)
-                framed.append(data)
-                self.sendFramed(framed)
+                let prefix = Data("{\"cap\":\(capturedAtMs),\"snd\":\(sndMs)}".utf8)
+                self.sendFramed(prefix: prefix, body: data)
             }
         }
         if submitStatus == noErr {
@@ -2701,74 +2709,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - H.264 -> Annex B
 
-    private func annexB(from sample: CMSampleBuffer) -> Data? {
-        guard let block = CMSampleBufferGetDataBuffer(sample) else { return nil }
-        var len = 0, total = 0
-        var ptr: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(block, atOffset: 0,
-                lengthAtOffsetOut: &len, totalLengthOut: &total,
-                dataPointerOut: &ptr) == noErr, let ptr else { return nil }
 
-        var out = Data(capacity: total + 128)
-        // On keyframes, prepend parameter sets (VPS/SPS/PPS for HEVC, SPS/PPS for H.264).
-        if isKeyframe(sample), let fmt = CMSampleBufferGetFormatDescription(sample) {
-            let codec = CMFormatDescriptionGetMediaSubType(fmt)
-            if codec == kCMVideoCodecType_HEVC {
-                var count = 0
-                if CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    fmt, parameterSetIndex: 0,
-                    parameterSetPointerOut: nil, parameterSetSizeOut: nil,
-                    parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil) == noErr {
-                    for i in 0..<count {
-                        var psPtr: UnsafePointer<UInt8>?
-                        var psLen = 0
-                        if CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                            fmt, parameterSetIndex: i,
-                            parameterSetPointerOut: &psPtr, parameterSetSizeOut: &psLen,
-                            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr,
-                           let psPtr {
-                            out.append(contentsOf: startCode)
-                            out.append(Data(bytes: psPtr, count: psLen))
-                        }
-                    }
-                }
-            } else {
-                for i in 0..<2 {           // index 0 = SPS, 1 = PPS
-                    var psPtr: UnsafePointer<UInt8>?
-                    var psLen = 0
-                    if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                            fmt, parameterSetIndex: i,
-                            parameterSetPointerOut: &psPtr,
-                            parameterSetSizeOut: &psLen,
-                            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr,
-                       let psPtr {
-                        out.append(contentsOf: startCode)
-                        out.append(Data(bytes: psPtr, count: psLen))
-                    }
-                }
-            }
-        }
-        // Convert AVCC (4-byte length-prefixed NALUs) to Annex B start codes.
-        let raw = UnsafeRawPointer(ptr)
-        var offset = 0
-        while offset + 4 <= total {
-            var nalLen: UInt32 = 0
-            memcpy(&nalLen, raw + offset, 4)
-            nalLen = CFSwapInt32BigToHost(nalLen)
-            offset += 4
-            guard offset + Int(nalLen) <= total else { break }
-            out.append(contentsOf: startCode)
-            out.append(Data(bytes: raw + offset, count: Int(nalLen)))
-            offset += Int(nalLen)
-        }
-        return out
-    }
-
-    private func isKeyframe(_ sample: CMSampleBuffer) -> Bool {
-        guard let arr = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false),
-              let dict = (arr as? [[CFString: Any]])?.first else { return true }
-        return !(dict[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
-    }
 
     // MARK: - Wire framing: [4-byte big-endian length][payload]
 
@@ -2809,27 +2750,36 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         connection.send(content: frame, completion: .contentProcessed { _ in })
     }
 
-    private func sendFramed(_ payload: Data) {
+    private func sendFramed(prefix: Data, body: Data) {
         guard let connection, connectionReady else { return }
-        let frame = FrameCodec.encode(payload, type: .video,
+        let frame = FrameCodec.encode(prefix: prefix, body: body, type: .video,
                                       tagged: peerSpeaksTaggedFrames)
+        pipelineLock.lock()
         pendingSends += 1
+        pipelineLock.unlock()
         connection.send(content: frame, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
-            self.pendingSends -= 1
+            self.pipelineLock.lock()
+            self.pendingSends = max(0, self.pendingSends - 1)
+            self.pipelineLock.unlock()
             if let error {
                 Log.info("send error: \(error)")
                 return
             }
+            self.pipelineLock.lock()
             self.framesSent += 1
             self.bytesSent += frame.count
             // Report stats roughly once a second.
             let elapsed = Date().timeIntervalSince(self.statsWindowStart)
-            if elapsed >= 1.0 {
-                let mbps = Double(self.bytesSent) * 8 / elapsed / 1_000_000
-                let frames = self.framesSent
+            let due = elapsed >= 1.0
+            let mbps = due ? Double(self.bytesSent) * 8 / elapsed / 1_000_000 : 0
+            let frames = self.framesSent
+            if due {
                 self.bytesSent = 0
                 self.statsWindowStart = Date()
+            }
+            self.pipelineLock.unlock()
+            if due {
                 Task { @MainActor in self.onStats?(frames, mbps) }
             }
         })

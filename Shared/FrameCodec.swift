@@ -32,10 +32,30 @@ enum FrameCodec {
         return frame
     }
 
+    /// Frame a payload that is logically `prefix + body`, without first
+    /// concatenating the two.
+    ///
+    /// The video path stamps a small JSON telemetry prefix onto every encoded
+    /// frame. Building that as `Data(prefix) + append(body)` and then framing
+    /// the result copies the whole frame twice per frame — hundreds of
+    /// kilobytes at 4K, sixty to a hundred and twenty times a second. Reserving
+    /// the total up front and appending both parts once copies each byte a
+    /// single time.
+    static func encode(prefix: Data, body: Data, type: FrameType, tagged: Bool) -> Data {
+        let bodyCount = prefix.count + body.count + (tagged ? 1 : 0)
+        var frame = Data(capacity: bodyCount + 4)
+        var header = UInt32(bodyCount).bigEndian
+        withUnsafeBytes(of: &header) { frame.append(contentsOf: $0) }
+        if tagged { frame.append(type.rawValue) }
+        frame.append(prefix)
+        frame.append(body)
+        return frame
+    }
+
     /// One deframed frame: its declared kind and its bytes.
     struct Frame {
         let type: FrameType?    // nil = tagged frame carrying an unknown type
-        let payload: Data
+        let payload: Data.SubSequence
     }
 
     /// Split a frame body into its type and payload.
@@ -47,7 +67,7 @@ enum FrameCodec {
     ///
     /// Returns nil only for a tagged body that is empty (no room for the type
     /// byte), which is a malformed frame.
-    static func decode(body: Data, tagged: Bool) -> Frame? {
+    static func decode(body: Data.SubSequence, tagged: Bool) -> Frame? {
         guard tagged else {
             return Frame(type: looksLikeJSON(body) ? .json : .video, payload: body)
         }
@@ -63,7 +83,7 @@ enum FrameCodec {
     /// consult it, which is the point of the tag: the ambiguity it papers over
     /// (a video frame's leading `{`, ruled out by the NUL bytes in Annex B
     /// start codes) has no equivalent answer once audio is on the wire.
-    static func looksLikeJSON(_ data: Data) -> Bool {
+    static func looksLikeJSON(_ data: Data.SubSequence) -> Bool {
         data.count < 32_768 && data.first == UInt8(ascii: "{") && !data.contains(0x00)
     }
 }

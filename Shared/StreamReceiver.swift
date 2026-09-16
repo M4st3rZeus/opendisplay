@@ -1252,7 +1252,7 @@ final class StreamReceiver: ObservableObject {
             guard buffer.distance(from: cursor, to: buffer.endIndex) >= 4 + len else { break }
             let start = buffer.index(cursor, offsetBy: 4)
             let end = buffer.index(start, offsetBy: len)
-            route(body: Data(buffer[start..<end]))
+            route(body: buffer[start..<end])
             cursor = end
         }
         buffer.removeSubrange(buffer.startIndex..<cursor)
@@ -1265,7 +1265,7 @@ final class StreamReceiver: ObservableObject {
     /// two applies is `senderSpeaksTaggedFrames`, latched from `welcome` — it
     /// is never guessed from the bytes, because the whole reason for the tag
     /// is that guessing stops working once audio shares the wire.
-    private func route(body: Data) {
+    private func route(body: Data.SubSequence) {
         guard let frame = FrameCodec.decode(body: body, tagged: senderSpeaksTaggedFrames) else {
             Log.info("dropping malformed empty tagged frame")
             return

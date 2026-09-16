@@ -7,6 +7,30 @@ final class FrameCodecTests: XCTestCase {
 
     // MARK: - Round trips
 
+    /// The two-part encode exists to avoid copying a whole video frame twice
+    /// per frame; it must still produce the exact bytes the one-part encode
+    /// would, or the receiver sees a different wire format at speed.
+    func testPrefixEncodeMatchesConcatenatedEncode() {
+        let prefix = Data(#"{"cap":1700000000000,"snd":1700000000005}"#.utf8)
+        let body = Data([0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00])
+
+        for tagged in [true, false] {
+            let split = FrameCodec.encode(prefix: prefix, body: body,
+                                          type: .video, tagged: tagged)
+            let joined = FrameCodec.encode(prefix + body, type: .video, tagged: tagged)
+            XCTAssertEqual(split, joined,
+                           "two-part and concatenated framing must agree (tagged: \(tagged))")
+        }
+    }
+
+    /// An empty prefix is the degenerate case the audio and JSON paths would
+    /// hit if they ever moved onto this entry point.
+    func testPrefixEncodeWithEmptyPrefix() {
+        let body = Data([0x01, 0x02, 0x03])
+        XCTAssertEqual(FrameCodec.encode(prefix: Data(), body: body, type: .video, tagged: true),
+                       FrameCodec.encode(body, type: .video, tagged: true))
+    }
+
     func testTaggedRoundTripPreservesTypeAndPayload() {
         let payloads: [(FrameType, Data)] = [
             (.video, Data([0x00, 0x00, 0x00, 0x01, 0x65, 0x88])),
