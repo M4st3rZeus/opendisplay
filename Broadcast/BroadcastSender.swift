@@ -35,7 +35,6 @@ final class BroadcastSender {
     private let queue = DispatchQueue(label: "broadcast.video")
     private let targetService: String
     private let targetAddress: String?
-    private let startCode: [UInt8] = [0, 0, 0, 1]
 
     private var connection: NWConnection?
     private var encoder: VTCompressionSession?
@@ -539,7 +538,7 @@ final class BroadcastSender {
             infoFlagsOut: nil
         ) { [weak self] status, _, buffer in
             guard status == noErr, let buffer, let self else { return }
-            if let data = self.annexB(from: buffer) {
+            if let data = AnnexB.convert(buffer) {
                 // Telemetry prefix before the first start code — the receiver
                 // parses it and skips to the H.264 payload. cap = capture time,
                 // snd = handoff to the socket (so cap→snd ≈ encode duration).
@@ -553,52 +552,7 @@ final class BroadcastSender {
 
     // MARK: - H.264 -> Annex B (same conversion as the Mac sender)
 
-    private func annexB(from sample: CMSampleBuffer) -> Data? {
-        guard let block = CMSampleBufferGetDataBuffer(sample) else { return nil }
-        var len = 0, total = 0
-        var ptr: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(block, atOffset: 0,
-                lengthAtOffsetOut: &len, totalLengthOut: &total,
-                dataPointerOut: &ptr) == noErr, let ptr else { return nil }
 
-        var out = Data(capacity: total + 128)
-        // On keyframes, prepend SPS/PPS (they live in the format description).
-        if isKeyframe(sample), let fmt = CMSampleBufferGetFormatDescription(sample) {
-            for i in 0..<2 {           // index 0 = SPS, 1 = PPS
-                var psPtr: UnsafePointer<UInt8>?
-                var psLen = 0
-                if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                        fmt, parameterSetIndex: i,
-                        parameterSetPointerOut: &psPtr,
-                        parameterSetSizeOut: &psLen,
-                        parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr,
-                   let psPtr {
-                    out.append(contentsOf: startCode)
-                    out.append(Data(bytes: psPtr, count: psLen))
-                }
-            }
-        }
-        // Convert AVCC (4-byte length-prefixed NALUs) to Annex B start codes.
-        let raw = UnsafeRawPointer(ptr)
-        var offset = 0
-        while offset + 4 <= total {
-            var nalLen: UInt32 = 0
-            memcpy(&nalLen, raw + offset, 4)
-            nalLen = CFSwapInt32BigToHost(nalLen)
-            offset += 4
-            guard offset + Int(nalLen) <= total else { break }
-            out.append(contentsOf: startCode)
-            out.append(Data(bytes: raw + offset, count: Int(nalLen)))
-            offset += Int(nalLen)
-        }
-        return out
-    }
-
-    private func isKeyframe(_ sample: CMSampleBuffer) -> Bool {
-        guard let arr = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false),
-              let dict = (arr as? [[CFString: Any]])?.first else { return true }
-        return !(dict[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
-    }
 
     // MARK: - Wire framing: [4-byte big-endian length][payload]
 

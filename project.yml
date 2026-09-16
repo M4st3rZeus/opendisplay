@@ -152,6 +152,7 @@ targets:
       - MacTests
       - Mac/CaptureLifecycle.swift
       - Shared/DisplayState.swift
+      - Shared/AnnexB.swift
       - Mac/DisplayArrangement.swift
       - Mac/StreamNegotiation.swift
       - Mac/H264FrameRatePolicy.swift
@@ -225,6 +226,7 @@ targets:
       - Broadcast
       - Shared/Protocol.swift
       - Shared/FrameCodec.swift
+      - Shared/AnnexB.swift
       # Audio forwarding from the phone's screen (issue #12 on the iOS side):
       # ReplayKit delivers app audio alongside video, so the extension encodes
       # and frames it exactly as the Mac sender does.

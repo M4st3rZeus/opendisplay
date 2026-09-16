@@ -105,7 +105,6 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// encode hiccup on either stream stall the other, and video is the one
     /// with a frame deadline.
     private let audioQueue = DispatchQueue(label: "sender.audio")
-    private let startCode: [UInt8] = [0, 0, 0, 1]
 
     // The dial target. Written on `queue` only (after init): the controller
     // can migrate a live session between transports via switchTransport.
@@ -2607,7 +2606,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 return
             }
             guard generation == self.captureGenerationNow else { return }
-            if let data = self.annexB(from: buffer) {
+            if let data = AnnexB.convert(buffer) {
                 let sndMs = Int64(Date().timeIntervalSince1970 * 1000)
                 let prefix = Data("{\"cap\":\(capturedAtMs),\"snd\":\(sndMs)}".utf8)
                 self.sendFramed(prefix: prefix, body: data)
@@ -2710,74 +2709,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - H.264 -> Annex B
 
-    private func annexB(from sample: CMSampleBuffer) -> Data? {
-        guard let block = CMSampleBufferGetDataBuffer(sample) else { return nil }
-        var len = 0, total = 0
-        var ptr: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(block, atOffset: 0,
-                lengthAtOffsetOut: &len, totalLengthOut: &total,
-                dataPointerOut: &ptr) == noErr, let ptr else { return nil }
 
-        var out = Data(capacity: total + 128)
-        // On keyframes, prepend parameter sets (VPS/SPS/PPS for HEVC, SPS/PPS for H.264).
-        if isKeyframe(sample), let fmt = CMSampleBufferGetFormatDescription(sample) {
-            let codec = CMFormatDescriptionGetMediaSubType(fmt)
-            if codec == kCMVideoCodecType_HEVC {
-                var count = 0
-                if CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    fmt, parameterSetIndex: 0,
-                    parameterSetPointerOut: nil, parameterSetSizeOut: nil,
-                    parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil) == noErr {
-                    for i in 0..<count {
-                        var psPtr: UnsafePointer<UInt8>?
-                        var psLen = 0
-                        if CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                            fmt, parameterSetIndex: i,
-                            parameterSetPointerOut: &psPtr, parameterSetSizeOut: &psLen,
-                            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr,
-                           let psPtr {
-                            out.append(contentsOf: startCode)
-                            out.append(Data(bytes: psPtr, count: psLen))
-                        }
-                    }
-                }
-            } else {
-                for i in 0..<2 {           // index 0 = SPS, 1 = PPS
-                    var psPtr: UnsafePointer<UInt8>?
-                    var psLen = 0
-                    if CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                            fmt, parameterSetIndex: i,
-                            parameterSetPointerOut: &psPtr,
-                            parameterSetSizeOut: &psLen,
-                            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil) == noErr,
-                       let psPtr {
-                        out.append(contentsOf: startCode)
-                        out.append(Data(bytes: psPtr, count: psLen))
-                    }
-                }
-            }
-        }
-        // Convert AVCC (4-byte length-prefixed NALUs) to Annex B start codes.
-        let raw = UnsafeRawPointer(ptr)
-        var offset = 0
-        while offset + 4 <= total {
-            var nalLen: UInt32 = 0
-            memcpy(&nalLen, raw + offset, 4)
-            nalLen = CFSwapInt32BigToHost(nalLen)
-            offset += 4
-            guard offset + Int(nalLen) <= total else { break }
-            out.append(contentsOf: startCode)
-            out.append(Data(bytes: raw + offset, count: Int(nalLen)))
-            offset += Int(nalLen)
-        }
-        return out
-    }
-
-    private func isKeyframe(_ sample: CMSampleBuffer) -> Bool {
-        guard let arr = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false),
-              let dict = (arr as? [[CFString: Any]])?.first else { return true }
-        return !(dict[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
-    }
 
     // MARK: - Wire framing: [4-byte big-endian length][payload]
 
