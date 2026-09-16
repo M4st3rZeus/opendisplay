@@ -66,6 +66,31 @@ final class InputInjector {
         self.displayID = displayID
     }
 
+    /// Release every synthetic contact when capture is paused or torn down.
+    /// The receiver may disappear without delivering the matching up event.
+    func cancelActiveInput() {
+        inputLock.lock()
+        defer { inputLock.unlock() }
+        let point = currentCursor()
+        if isDown {
+            if let event = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
+                                   mouseCursorPosition: point, mouseButton: .left) {
+                event.setIntegerValueField(.mouseEventClickState, value: 0)
+                event.post(tap: .cghidEventTap)
+            }
+            isDown = false
+        }
+        if penDown {
+            penClickSession = nil
+            postTabletPoint(phase: .up, x: nil, y: nil, pressure: 0,
+                            tiltX: 0, tiltY: 0, rotation: 0, cancelClick: true)
+            penDown = false
+        }
+        if inRange { setProximity(entering: false, at: point) }
+        penClickSession = nil
+        penLastClick = nil
+    }
+
     static func ensureAccessibilityPermission() -> Bool {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
@@ -142,24 +167,6 @@ final class InputInjector {
     }
 
     /// Clear held synthetic state when input is disabled during a gesture.
-    func cancelActiveInput() {
-        inputLock.lock()
-        defer { inputLock.unlock() }
-        if isDown {
-            isDown = false
-            if let event = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
-                                   mouseCursorPosition: currentCursor(), mouseButton: .left) {
-                event.setIntegerValueField(.mouseEventClickState, value: 0)
-                event.post(tap: .cghidEventTap)
-            }
-        }
-        if penDown {
-            postTabletPoint(phase: .up, x: nil, y: nil, pressure: 0,
-                            tiltX: 0, tiltY: 0, rotation: 0)
-            penDown = false
-        }
-        if inRange { setProximity(entering: false, at: currentCursor()) }
-    }
 
     /// The control-message gate is duplicated here under the input lock so an
     /// OFF transition cannot race an event that already passed its outer gate.
@@ -245,7 +252,7 @@ final class InputInjector {
 
     private func postTabletPoint(phase: PointPhase, x: Double?, y: Double?,
                                  pressure: Double, tiltX: Double, tiltY: Double,
-                                 rotation: Double) {
+                                 rotation: Double, cancelClick: Bool = false) {
         let p: CGPoint
         if let nx = x, let ny = y { p = screenPoint(nx: nx, ny: ny) }
         else { p = currentCursor() }
@@ -273,7 +280,8 @@ final class InputInjector {
         case .down:
             ev.setIntegerValueField(.mouseEventClickState, value: Int64(beginPenClickSession(at: p)))
         case .up:
-            ev.setIntegerValueField(.mouseEventClickState, value: Int64(finishPenClickSession(at: p)))
+            let clickState = cancelClick ? 0 : finishPenClickSession(at: p)
+            ev.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
         case .drag, .hover:
             break
         }

@@ -187,6 +187,9 @@ struct ReceiverScreen: View {
                         // to fill the screen and lands under the notch again.
                         // Insetting the view is what actually moves the picture.
                         .ignoresSafeArea(edges: fitSafeArea ? [] : .all)
+                        // Paused is a sender-side state, so input is gated
+                        // here rather than dropped on arrival at the Mac.
+                        .allowsHitTesting(model.receiver.displayState == .running)
                         // The safe area cannot express the camera housing while
                         // the status bar is hidden (iOS reports top = 0), so the
                         // top strip is padded explicitly. Without this the
@@ -194,6 +197,19 @@ struct ReceiverScreen: View {
                         // reported panel already excludes these points, so
                         // omitting the padding also stretches the picture.
                         .padding(.top, housingPadding)
+                    if model.receiver.displayState == .paused {
+                        VStack(spacing: 8) {
+                            Text("Display Paused")
+                                .font(.headline)
+                            Text("Resume from OpenDisplay on your Mac.")
+                                .font(.subheadline)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 14)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        .foregroundStyle(.white)
+                        .allowsHitTesting(false)
+                    }
                     // Connected but no frames coming: without this the screen
                     // is silently black while the Mac sorts itself out (e.g.
                     // the poisoned-identity recovery, #230).
@@ -793,6 +809,10 @@ struct VideoLayerView: UIViewRepresentable {
         view.backgroundColor = .black
         view.isMultipleTouchEnabled = true
         view.receiver = receiver
+        receiver.onDisplayStateChange = { [weak view] state in
+            if state == .paused { view?.clearInputStateForPause() }
+        }
+        if receiver.displayState == .paused { view.clearInputStateForPause() }
 
         Log.info("video view: metal=\(useMetal)")
         if useMetal, let renderer = MetalVideoRenderer() {
@@ -892,6 +912,12 @@ struct VideoLayerView: UIViewRepresentable {
         private var cursorVisible = false
 
         private var lastLoggedLayout = ""
+
+        func clearInputStateForPause() {
+            twoFingerActive = false
+            discardPendingDown()
+            inputEngine.cancelForDisplayPause()
+        }
 
         override func layoutSubviews() {
             super.layoutSubviews()
@@ -1374,6 +1400,11 @@ final class InputCaptureEngine: NSObject {
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hoverChanged(_:)))
         hover.allowedTouchTypes = [UITouch.TouchType.pencil.rawValue as NSNumber]
         view.addGestureRecognizer(hover)
+    }
+
+    func cancelForDisplayPause() {
+        activePens.removeAll()
+        proximityActive = false
     }
 
     @objc private func hoverChanged(_ gr: UIHoverGestureRecognizer) {

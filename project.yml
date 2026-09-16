@@ -150,6 +150,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - MacTests
+      - Mac/CaptureLifecycle.swift
+      - Shared/DisplayState.swift
       - Mac/DisplayArrangement.swift
       - Mac/StreamNegotiation.swift
       - Mac/H264FrameRatePolicy.swift
