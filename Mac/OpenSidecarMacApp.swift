@@ -214,6 +214,10 @@ final class SenderController: ObservableObject {
         didSet { UserDefaults.standard.set(audioEnabled, forKey: "audioEnabled") }
     }
 
+    @Published var frameRate = FrameRate(rawValue: UserDefaults.standard.integer(forKey: "frameRate")) ?? .fps60 {
+        didSet { UserDefaults.standard.set(frameRate.rawValue, forKey: "frameRate") }
+    }
+
     var running: Bool { !sessions.isEmpty }
 
     private var browser: NWBrowser?
@@ -625,7 +629,8 @@ final class SenderController: ObservableObject {
 
         let name = label(for: target)
         let sender = MacSender(transport: transport, name: name, mode: mode,
-                               quality: quality, displaySerial: Self.displaySerial(for: id),
+                               quality: quality, frameRate: frameRate,
+                               displaySerial: Self.displaySerial(for: id),
                                identityOffset: identityOffset(for: id),
                                awaitingWake: awaitingWake)
         let session = DeviceSession(id: id, target: target, name: name, sender: sender)
@@ -1024,6 +1029,13 @@ struct ContentView: View {
                     Toggle("Stream audio", isOn: $controller.audioEnabled)
                         .onChange(of: controller.audioEnabled) { controller.restartAll() }
                     Text("Sends this Mac's audio to the connected device. Needs OpenDisplay 4 or newer on the receiving end; older devices keep showing the picture only.")
+                    Picker("Frame Rate", selection: $controller.frameRate) {
+                        ForEach(FrameRate.allCases) { r in
+                            Text(r.label).tag(r)
+                        }
+                    }
+                    .onChange(of: controller.frameRate) { controller.restartAll() }
+                    Text(controller.frameRate.explanation)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

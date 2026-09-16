@@ -153,6 +153,7 @@ targets:
       - Mac/DisplayArrangement.swift
       - Mac/StreamNegotiation.swift
       - Mac/H264FrameRatePolicy.swift
+      - Mac/FrameRate.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/LogSnapshot.swift
