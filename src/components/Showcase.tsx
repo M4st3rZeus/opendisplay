@@ -16,6 +16,11 @@ const ITEMS: ShowcaseItem[] = [
     id: "W3dGq8yXOcA",
     title: "OpenDisplay demo",
   },
+  {
+    kind: "youtube",
+    id: "XHQ1IFU43_E",
+    title: "OpenDisplay demo",
+  },
   ...COVERAGE,
 ]
 

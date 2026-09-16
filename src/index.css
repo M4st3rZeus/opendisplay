@@ -120,8 +120,15 @@ h2 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.1; letter-spacing: -0.0
 .download-group-intro { color: var(--muted); font-size: 0.98rem; margin-top: 8px; }
 .download-options { display: grid; gap: 36px; margin-top: 28px; }
 .sender-download { justify-content: center; grid-template-columns: minmax(0, 440px); }
-.receiver-downloads { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.receiver-downloads { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .download-option { text-align: center; }
+.receiver-visual-placeholder { display: none; }
+@media (min-width: 721px) {
+  .receiver-downloads .download-option { display: grid;
+    grid-template-rows: 166px auto auto var(--download-control-height) 1fr; align-items: start; }
+  .receiver-visual-placeholder { display: block; }
+  .receiver-copy, .receiver-downloads .sub { align-self: end; }
+}
 @media (max-width: 720px) {
   .receiver-downloads { grid-template-columns: 1fr; gap: 48px; }
 }
@@ -166,6 +173,7 @@ h2 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.1; letter-spacing: -0.0
 .btn.ghost:hover { background: var(--fg); color: var(--bg); }
 .note { font-size: 0.84rem; color: var(--muted); margin-top: 14px; line-height: 1.5; }
 .sub { display: block; font-size: 0.84rem; color: var(--muted); margin-top: 12px; }
+.no-break { white-space: nowrap; }
 /* Secondary links under the download buttons share one subtle treatment
    (they had drifted — the iOS ones were inheriting the darker default link). */
 .note a, .download-option .sub a { color: var(--muted); text-decoration-color: var(--line); }
@@ -178,6 +186,11 @@ h2 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.1; letter-spacing: -0.0
 .app-store-button { display: block; width: 132px; height: var(--download-control-height);
   margin-inline: auto; border-radius: var(--download-control-radius); overflow: hidden; line-height: 0; }
 .app-store-button img { display: block; width: auto; height: 100%; }
+.app-store-qr { height: 166px; }
+.app-store-qr img { display: block; width: 148px; height: 148px; margin-inline: auto; }
+@media (max-width: 680px), (max-height: 500px) and (pointer: coarse) {
+  .app-store-qr { display: none; }
+}
 
 /* Demo video: responsive 16:9 embed matching the bordered, squared aesthetic. */
 .video-embed { position: relative; aspect-ratio: 16 / 9;

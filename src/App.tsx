@@ -4,6 +4,8 @@ import Showcase from "./components/Showcase"
 import SupportNudge from "./components/SupportNudge"
 import TextRotate from "./components/TextRotate"
 
+const APP_STORE_URL = "https://apps.apple.com/us/app/opendisplay/id6780264891"
+
 const HERO_WORDS = [
   "partner's iPad",
   "5K iMac",
@@ -18,7 +20,7 @@ const HERO_WORDS = [
 
 function AppStoreButton() {
   return (
-    <a className="app-store-button" href="https://apps.apple.com/app/id6780264891" aria-label="Download on the App Store">
+    <a className="app-store-button" href={APP_STORE_URL} aria-label="Download on the App Store">
       <img src="app-store-badge.svg" alt="" width="120" height="40" />
     </a>
   )
@@ -228,27 +230,38 @@ export default function App() {
             <p className="download-group-intro">Install one on the device you want to use as your extra display.</p>
             <div className="download-options receiver-downloads">
               <div className="download-option">
+                <div className="app-store-qr">
+                  <img
+                    src="app-store-qr.svg"
+                    alt="QR code for OpenDisplay in the App Store"
+                    width="148"
+                    height="148"
+                  />
+                </div>
                 <div className="platform">
                   <span className="platform-name">iOS</span><span className="platform-separator">&amp;</span><span className="platform-name">iPadOS</span>
                 </div>
                 <p className="dl-sub">The receiver app for your iPhone and iPad.</p>
                 <AppStoreButton />
                 <p className="sub">
-                  Want early builds? <a id="testflight" href="https://testflight.apple.com/join/3NYaY11c">Join the TestFlight beta</a>, or <a href="https://github.com/peetzweg/opendisplay#quick-start">compile from source ↗</a>.
+                  Want early builds? <span className="no-break"><a id="testflight" href="https://testflight.apple.com/join/3NYaY11c">Join the TestFlight beta</a></span>, or <span className="no-break"><a href="https://github.com/peetzweg/opendisplay#quick-start">compile from source ↗</a></span>.
                 </p>
               </div>
               <div className="download-option">
+                <div className="receiver-visual-placeholder" aria-hidden="true" />
                 <div className="platform">macOS</div>
                 <p className="dl-sub">Turns an older Mac into a second display.</p>
                 <a className="btn primary" href="https://github.com/peetzweg/opendisplay/releases/latest/download/OpenDisplayReceiver.dmg">
                   Download
                 </a>
-                <p className="note">
-                  Got a spare <em>Mac</em> to use as the display? Install OpenDisplay Receiver on it instead of the iOS app — runs on macOS&nbsp;12+, so older Macs qualify.
-                </p>
-                <p className="note">
-                  <a href="https://github.com/peetzweg/opendisplay/releases">Browse all releases ↗</a>
-                </p>
+                <div className="receiver-copy">
+                  <p className="note">
+                    Got a spare <em>Mac</em> to use as the display? Install OpenDisplay Receiver on it instead of the iOS app — runs on macOS&nbsp;12+, so older Macs qualify.
+                  </p>
+                  <p className="note">
+                    <a href="https://github.com/peetzweg/opendisplay/releases">Browse all releases ↗</a>
+                  </p>
+                </div>
               </div>
             </div>
           </div>
